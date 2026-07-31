@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { interpretDocResult } from "../src/pageindex-client.js";
+import { interpretDocResult, unwrap } from "../src/pageindex-client.js";
 
 describe("interpretDocResult", () => {
   it("treats null as not found", () => {
@@ -19,5 +19,34 @@ describe("interpretDocResult", () => {
   });
   it("is found even without a title field", () => {
     expect(interpretDocResult({ status: "ready" })).toEqual({ found: true, title: null });
+  });
+});
+
+describe("unwrap", () => {
+  it("returns structuredContent when present", () => {
+    expect(unwrap({ structuredContent: { title: "Doc", status: "ready" } })).toEqual({
+      title: "Doc",
+      status: "ready",
+    });
+  });
+
+  it("parses a content block with JSON text", () => {
+    expect(unwrap({ content: [{ text: '{"title":"Doc"}' }] })).toEqual({ title: "Doc" });
+  });
+
+  it("wraps a content block with non-JSON text", () => {
+    expect(unwrap({ content: [{ text: "not json" }] })).toEqual({ text: "not json" });
+  });
+
+  it("throws when content is empty", () => {
+    expect(() => unwrap({ content: [] })).toThrow();
+  });
+
+  it("throws when the content block has no text field", () => {
+    expect(() => unwrap({ content: [{}] })).toThrow();
+  });
+
+  it("throws when the tool call reports isError", () => {
+    expect(() => unwrap({ isError: true, content: [{ text: "Error: PageIndex API returned 503" }] })).toThrow();
   });
 });

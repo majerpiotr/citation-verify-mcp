@@ -19,7 +19,13 @@ export function interpretDocResult(
 
 // Concrete client. Spawns pageindex-mcp and dispatches get_document over stdio.
 // Network glue - exercised by test/integration.test.ts, not the unit suite.
-// NOTE: finalize the get_document argument shape after Spike B (doc_name vs doc_id).
+// NOTE: two things are unconfirmed pending Spike B (needs a live API key + network,
+// forbidden in this run): (1) the get_document argument shape (doc_name vs doc_id),
+// and (2) the found-vs-not-found discriminator itself - interpretDocResult's "any
+// truthy value means found" heuristic would misread real not-found payloads such as
+// {"error":"Document not found"}, {"status":"not_found"}, or
+// {"found":false,"message":"..."} as found:true. Spike B must pin down the real shape
+// before that heuristic can be trusted.
 export class PageindexMcpClient implements DocLookup {
   private client: Client;
 
@@ -47,10 +53,27 @@ export class PageindexMcpClient implements DocLookup {
   }
 }
 
-function unwrap(res: unknown): Record<string, unknown> | null {
-  const structured = (res as { structuredContent?: Record<string, unknown> }).structuredContent;
-  if (structured) return structured;
-  const content = (res as { content?: Array<{ text?: string }> }).content ?? [];
+// Reserved meaning of the return value: `null` means a well-formed response that
+// positively states the document does not exist (e.g. a content block whose JSON text
+// literally parses to `null`). Anything else that isn't a positive statement about the
+// document - a protocol-level isError, or a response with no interpretable payload at
+// all - is NOT a "not found" and must throw so it becomes `unchecked`, not `unresolved`
+// (CLAUDE.md hard rule 4).
+export function unwrap(res: unknown): Record<string, unknown> | null {
+  const r = res as {
+    isError?: boolean;
+    structuredContent?: Record<string, unknown>;
+    content?: Array<{ text?: string }>;
+  };
+
+  if (r.isError) {
+    const message = r.content?.find((block) => block.text)?.text ?? "no error detail provided";
+    throw new Error(`get_document reported an error: ${message}`);
+  }
+
+  if (r.structuredContent) return r.structuredContent;
+
+  const content = r.content ?? [];
   for (const block of content) {
     if (block.text) {
       try {
@@ -60,5 +83,6 @@ function unwrap(res: unknown): Record<string, unknown> | null {
       }
     }
   }
-  return null;
+
+  throw new Error("get_document returned no interpretable payload");
 }
