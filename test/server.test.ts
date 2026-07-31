@@ -39,6 +39,46 @@ describe("createServer verify_citations tool", () => {
     expect(parsed.unresolved).toEqual(["fake-doc"]);
   });
 
+  // The description is the only in-band instruction a consuming agent ever gets. These
+  // assertions match meaning-carrying phrases, not the whole string, so wording can be
+  // tuned but a load-bearing clause cannot be dropped silently.
+  it("publishes a description carrying its load-bearing clauses", async () => {
+    const server = createServer(fake);
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverT);
+    const client = new Client({ name: "test", version: "0.0.1" });
+    await client.connect(clientT);
+
+    const tool = (await client.listTools()).tools.find((t) => t.name === "verify_citations");
+    expect(tool).toBeDefined();
+    const description = tool?.description ?? "";
+
+    // `unchecked` citations must not be deleted - the outage-safety instruction.
+    expect(description).toMatch(/do not delete them/i);
+    // `unresolved` is an array of tokens, not a count.
+    expect(description).toMatch(/unresolved`?\s*[-:]\s*an ARRAY of tokens/i);
+    // Extraction is pattern-based, and total: 0 is not an endorsement.
+    expect(description).toMatch(/only citations written as/i);
+    expect(description).toMatch(/node_id/);
+    expect(description).toMatch(/recognized shape/i);
+    // Existence is checked per document, not per page.
+    expect(description).toMatch(/page reference[^.]*not verified/i);
+  });
+
+  it("publishes an input schema requiring text", async () => {
+    const server = createServer(fake);
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverT);
+    const client = new Client({ name: "test", version: "0.0.1" });
+    await client.connect(clientT);
+
+    const tool = (await client.listTools()).tools.find((t) => t.name === "verify_citations");
+    const schema = tool?.inputSchema;
+    expect(schema?.type).toBe("object");
+    expect(Object.keys(schema?.properties ?? {})).toContain("text");
+    expect(schema?.required).toContain("text");
+  });
+
   it("passes a backend failure through as unchecked, never unresolved", async () => {
     const server = createServer(failing);
     const [clientT, serverT] = InMemoryTransport.createLinkedPair();

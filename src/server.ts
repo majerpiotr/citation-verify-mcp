@@ -17,6 +17,11 @@ export function createServer(client: DocLookup): McpServer {
         "`unresolved` - an ARRAY of tokens that were checked against the corpus and NOT found; " +
         "`unchecked` - an ARRAY of tokens the check could not run for (e.g. backend outage); " +
         "`details` - a per-token list of `{ token, status, title }`. " +
+        "Only citations written as `node_id: <id>` or `<name>.pdf p.<N>` are recognized, so " +
+        "`total: 0` means no citation OF A RECOGNIZED SHAPE was found - NOT that the text is " +
+        "free of citations; if you cited in any other form, rewrite it in a recognized shape " +
+        "and call again. Existence is checked at DOCUMENT level only: a page reference inside " +
+        "a token is not verified, so a resolved token does not confirm the page. " +
         "For each `unresolved` citation, remove the claim or replace it with a verified " +
         "citation. Leave `unchecked` citations in place - the corpus was never consulted for " +
         "them, so they may still be valid; do not delete them. " +
