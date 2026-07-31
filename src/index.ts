@@ -6,7 +6,9 @@ import { PageindexMcpClient } from "./pageindex-client.js";
 import { createServer } from "./server.js";
 
 async function main(): Promise<void> {
-  const apiKey = process.env.PAGEINDEX_API_KEY;
+  // Trim at the read site, not only in the guard: a key with a trailing newline would
+  // otherwise pass validation and then fail auth on every lookup.
+  const apiKey = process.env.PAGEINDEX_API_KEY?.trim();
   // `!apiKey` narrows out `undefined`/`""` for the compiler; `isUsableApiKey` covers
   // the rest (whitespace-only, unsubstituted shell placeholders, doc-style
   // placeholders). Both must hold for `apiKey` to be usable below.

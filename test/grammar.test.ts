@@ -51,6 +51,13 @@ describe("extractCitations", () => {
     expect(extractCitations(text)).toEqual(["report.pdf#p5-7"]);
   });
 
+  it("drops a token that is empty once trailing punctuation is stripped", () => {
+    // An ellipsis placeholder must not become an empty docName sent to the backend, nor
+    // an empty token inflating `total`.
+    expect(extractCitations("node_id: ...")).toEqual([]);
+    expect(extractCitations("node_id: ). node_id: abc-123")).toEqual(["abc-123"]);
+  });
+
   it("does not truncate a dotted document name", () => {
     const text = "See annual.report.pdf page 5.";
     expect(extractCitations(text)).toEqual(["annual.report.pdf#p5"]);

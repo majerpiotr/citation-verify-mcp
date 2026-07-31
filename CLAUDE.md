@@ -52,14 +52,19 @@ actual result; do not assert success from expectation.
 
 ## Current state
 
-- Git: branch `main`, **no commits yet**, no remote. `.gitignore` and `docs/` are
-  untracked; the first commit (Task 1, Step 6) picks them up.
-- Node v24 present (plan requires >= 20). No dependencies installed yet.
-- Tasks 1-6 are fully offline: they build against a fake `DocLookup`, so they need no API
-  key and no network.
-- Spike B and Task 7 need the real API key (see rule 2) and network.
-- Spike A cannot be done inside this repo - it requires representative outputs from a
-  consuming agent. Treat it as an open input, not a blocker for Tasks 1-6.
+- Git: branch `feature/citation-verify-core`, with commits. No remote.
+- Node v24 present (plan requires >= 20). Dependencies installed.
+- Tasks 1-6 are complete and reviewed: grammar, PageIndex client, resolver, MCP server
+  surface, binary entry point, plus the fixes from a whole-branch review. The unit suite
+  is fully offline - it builds against a fake `DocLookup`, so it needs no API key and no
+  network.
+- Task 7 (integration test) and Task 8 (README) have NOT been run, and neither spike has.
+  Spike A needs representative outputs from an external consuming system, which this repo
+  cannot produce. Spike B and Task 7 need a live API key and network, which the operator
+  withheld. Their checkboxes in `docs/implementation-plan.md` are deliberately unticked
+  and each carries a note recording why.
+- Consequence to respect: the `get_document` argument shape and the real
+  found-vs-not-found discriminator are still unconfirmed (Spike B). Do not guess at them.
 
 ## Commands
 

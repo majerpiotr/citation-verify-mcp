@@ -47,6 +47,9 @@ NOT block Tasks 1-6 (built against a fake client).
 
 ### Spike A: Confirm the real citation format
 
+> NOT RUN: it needs representative outputs from an external consuming system, which this
+> repo cannot produce; the grammar therefore still rests on the assumed token shapes.
+
 - [ ] Collect representative outputs from the consuming agent(s) and grep for candidate
   citation shapes (`node_id:` tokens, `<doc>.pdf p.<N>`, bare references).
 - [ ] **Exit criteria:** a written list of the exact token shapes to support in the
@@ -56,6 +59,10 @@ NOT block Tasks 1-6 (built against a fake client).
   for whatever form they do emit.
 
 ### Spike B: Confirm the wrap transport in the target runtime
+
+> NOT RUN: it needs a live API key and network access, which the operator withheld for
+> this run; the `get_document` argument shape and the found-vs-not-found discriminator
+> remain unconfirmed.
 
 - [ ] With a valid `PAGEINDEX_API_KEY`, run a throwaway script that spawns
   `npx -y pageindex-mcp` via the MCP SDK stdio client and calls `get_document` for one
@@ -656,6 +663,9 @@ git commit -m "feat: stdio bin entry point"
 
 ## Task 7: Integration test against real PageIndex
 
+> NOT RUN: it needs a live API key and network access (and Spike B's findings), which the
+> operator withheld for this run.
+
 **Files:**
 - Create: `test/integration.test.ts`
 
@@ -700,6 +710,9 @@ git commit -m "test: integration against real PageIndex, credential-gated"
 ---
 
 ## Task 8: README
+
+> NOT RUN: deferred until Tasks 7 and Spike B settle the documented behaviour, so the
+> README does not publish unverified claims.
 
 **Files:**
 - Create: `README.md`
