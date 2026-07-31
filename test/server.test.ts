@@ -6,7 +6,8 @@ import type { DocLookup } from "../src/pageindex-client.js";
 
 const fake: DocLookup = {
   async getDocument(docName) {
-    return docName === "real-doc" ? { title: "Real Doc", status: "ready" } : {};
+    // `null` is the backend contract's "document does not exist" (see unwrap).
+    return docName === "real-doc" ? { title: "Real Doc", status: "ready" } : null;
   },
 };
 

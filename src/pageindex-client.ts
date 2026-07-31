@@ -6,12 +6,23 @@ export interface DocLookup {
   getDocument(docName: string): Promise<Record<string, unknown> | null>;
 }
 
+// `null` is the ONLY input that means "not found" - it is `unwrap`'s reserved value for a
+// well-formed response positively stating the document does not exist. Anything else that
+// cannot be read as a statement about a document is ambiguous, and ambiguity must throw so
+// the caller records `unchecked`, never `unresolved` (CLAUDE.md hard rule 4): a consuming
+// agent deletes `unresolved` citations, so a degraded backend must not be able to trigger
+// that.
 export function interpretDocResult(
   raw: Record<string, unknown> | null,
 ): { found: boolean; title: string | null } {
-  if (!raw) return { found: false, title: null };
+  if (raw === null) return { found: false, title: null };
   const values = Object.values(raw);
-  const found = values.length > 0 && values.some((v) => Boolean(v));
+  if (values.length === 0) {
+    throw new Error(
+      "get_document returned an empty object, which states nothing about the document",
+    );
+  }
+  const found = values.some((v) => Boolean(v));
   const rawTitle = raw["title"];
   const title = typeof rawTitle === "string" && rawTitle ? rawTitle : null;
   return { found, title };
@@ -53,12 +64,26 @@ export class PageindexMcpClient implements DocLookup {
   }
 }
 
+const MAX_EXCERPT_CHARS = 200;
+
+// Short, single-line, length-capped rendering of an unusable payload, so a failure is
+// diagnosable without a large response body flooding stderr.
+function excerpt(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > MAX_EXCERPT_CHARS ? `${flat.slice(0, MAX_EXCERPT_CHARS)}...` : flat;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // Reserved meaning of the return value: `null` means a well-formed response that
 // positively states the document does not exist (e.g. a content block whose JSON text
 // literally parses to `null`). Anything else that isn't a positive statement about the
-// document - a protocol-level isError, or a response with no interpretable payload at
-// all - is NOT a "not found" and must throw so it becomes `unchecked`, not `unresolved`
-// (CLAUDE.md hard rule 4).
+// document - a protocol-level isError, a payload that is not JSON (a plain-text backend
+// error such as "401 Unauthorized" is not a document), a JSON value that is not an
+// object, or a response with no interpretable payload at all - is NOT a "not found" and
+// must throw so it becomes `unchecked`, not `unresolved` (CLAUDE.md hard rule 4).
 export function unwrap(res: unknown): Record<string, unknown> | null {
   const r = res as {
     isError?: boolean;
@@ -76,11 +101,19 @@ export function unwrap(res: unknown): Record<string, unknown> | null {
   const content = r.content ?? [];
   for (const block of content) {
     if (block.text) {
+      let parsed: unknown;
       try {
-        return JSON.parse(block.text) as Record<string, unknown>;
+        parsed = JSON.parse(block.text);
       } catch {
-        return { text: block.text };
+        throw new Error(`get_document returned a non-JSON payload: ${excerpt(block.text)}`);
       }
+      if (parsed === null) return null;
+      if (!isPlainObject(parsed)) {
+        throw new Error(
+          `get_document returned a JSON payload that is not an object: ${excerpt(block.text)}`,
+        );
+      }
+      return parsed;
     }
   }
 

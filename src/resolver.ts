@@ -24,15 +24,22 @@ export async function verifyCitations(text: string, client: DocLookup): Promise<
 
   for (const token of tokens) {
     const { docName } = splitToken(token);
-    let raw: Record<string, unknown> | null;
+    let outcome: { found: boolean; title: string | null };
     try {
-      raw = await client.getDocument(docName);
+      // Both steps are inside the boundary: the lookup fails when the backend is
+      // unreachable, and interpretDocResult throws when the payload states nothing about
+      // the document. Either way the check could not be completed, so the verdict is
+      // `unchecked` - never `unresolved` (CLAUDE.md hard rule 4).
+      outcome = interpretDocResult(await client.getDocument(docName));
     } catch {
       details.push({ token, status: "unchecked", title: null });
       continue;
     }
-    const { found, title } = interpretDocResult(raw);
-    details.push({ token, status: found ? "resolved" : "unresolved", title });
+    details.push({
+      token,
+      status: outcome.found ? "resolved" : "unresolved",
+      title: outcome.title,
+    });
   }
 
   return {

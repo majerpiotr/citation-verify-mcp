@@ -17,7 +17,9 @@ describe("verifyCitations", () => {
     const text = "node_id: real-doc node_id: fake-doc node_id: down-doc";
     const client = fakeClient({
       "real-doc": { title: "Real Doc", status: "ready" },
-      "fake-doc": {},
+      // `null` is how the backend contract states "this document does not exist"
+      // (see unwrap in src/pageindex-client.ts).
+      "fake-doc": null,
       "down-doc": "throw",
     });
     const r = await verifyCitations(text, client);
@@ -38,6 +40,18 @@ describe("verifyCitations", () => {
     const r = await verifyCitations("node_id: x-doc", client);
     expect(r.unresolved).toEqual([]);
     expect(r.unchecked).toEqual(["x-doc"]);
+  });
+
+  it("treats an ambiguous backend payload as unchecked, never unresolved", async () => {
+    const client: DocLookup = {
+      async getDocument() {
+        // An empty envelope from a degraded backend: not a positive statement of absence.
+        return {};
+      },
+    };
+    const r = await verifyCitations("node_id: maybe-doc", client);
+    expect(r.unresolved).toEqual([]);
+    expect(r.unchecked).toEqual(["maybe-doc"]);
   });
 
   it("asks the backend for the docName, not the raw token, while reporting the full token", async () => {
