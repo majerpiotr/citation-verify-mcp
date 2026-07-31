@@ -265,7 +265,7 @@ git commit -m "feat: citation grammar extraction and token split"
   - `interpretDocResult(raw: Record<string, unknown> | null): { found: boolean; title: string | null }`
   - `class PageindexMcpClient implements DocLookup` (concrete; network glue, covered by Task 7).
 
-- [ ] **Step 1: Write the failing test (pure `interpretDocResult`)**
+- [x] **Step 1: Write the failing test (pure `interpretDocResult`)**
 
 ```ts
 import { describe, it, expect } from "vitest";
@@ -293,12 +293,12 @@ describe("interpretDocResult", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run test/pageindex-client.test.ts`
 Expected: FAIL - module not found.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```ts
 // src/pageindex-client.ts
@@ -367,12 +367,12 @@ function unwrap(res: unknown): Record<string, unknown> | null {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run test/pageindex-client.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/pageindex-client.ts test/pageindex-client.test.ts
