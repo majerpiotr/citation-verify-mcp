@@ -22,16 +22,30 @@ export async function verifyCitations(text: string, client: DocLookup): Promise<
   const tokens = extractCitations(text);
   const details: CitationDetail[] = [];
 
+  // One backend round trip per distinct document within THIS call. Several tokens can
+  // cite different pages of the same document, and each lookup carries the SDK's default
+  // per-request timeout, so per-token lookups can outlast the host's own tool-call budget
+  // and leave the agent with no verdict at all. `null` records a lookup that failed.
+  // Not a cache: this map is created per call and dies with it.
+  const outcomes = new Map<string, { found: boolean; title: string | null } | null>();
+
   for (const token of tokens) {
     const { docName } = splitToken(token);
-    let outcome: { found: boolean; title: string | null };
-    try {
-      // Both steps are inside the boundary: the lookup fails when the backend is
-      // unreachable, and interpretDocResult throws when the payload states nothing about
-      // the document. Either way the check could not be completed, so the verdict is
-      // `unchecked` - never `unresolved` (CLAUDE.md hard rule 4).
-      outcome = interpretDocResult(await client.getDocument(docName));
-    } catch {
+
+    if (!outcomes.has(docName)) {
+      try {
+        // Both steps are inside the boundary: the lookup fails when the backend is
+        // unreachable, and interpretDocResult throws when the payload states nothing about
+        // the document. Either way the check could not be completed, so the verdict is
+        // `unchecked` - never `unresolved` (CLAUDE.md hard rule 4).
+        outcomes.set(docName, interpretDocResult(await client.getDocument(docName)));
+      } catch {
+        outcomes.set(docName, null);
+      }
+    }
+
+    const outcome = outcomes.get(docName) ?? null;
+    if (outcome === null) {
       details.push({ token, status: "unchecked", title: null });
       continue;
     }

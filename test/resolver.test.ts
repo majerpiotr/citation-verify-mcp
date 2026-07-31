@@ -65,7 +65,28 @@ describe("verifyCitations", () => {
     const text = "See report.pdf, p. 3 and report.pdf page 7.";
     const r = await verifyCitations(text, client);
 
-    expect(requestedDocNames).toEqual(["report.pdf", "report.pdf"]);
+    // One lookup per distinct document, not per token: two page tokens of the same
+    // document must not cost two sequential backend round trips.
+    expect(requestedDocNames).toEqual(["report.pdf"]);
     expect(r.details.map((d) => d.token)).toEqual(["report.pdf#p3", "report.pdf#p7"]);
+    expect(r.details.map((d) => d.status)).toEqual(["resolved", "resolved"]);
+    expect(r.details.map((d) => d.title)).toEqual(["Report", "Report"]);
+    expect(r.total).toBe(2);
+  });
+
+  it("reuses a failed lookup for every token of the same document", async () => {
+    let calls = 0;
+    const client: DocLookup = {
+      async getDocument() {
+        calls += 1;
+        throw new Error("backend down");
+      },
+    };
+    const r = await verifyCitations("See report.pdf p.3 and report.pdf p.7.", client);
+
+    expect(calls).toBe(1);
+    expect(r.unchecked).toEqual(["report.pdf#p3", "report.pdf#p7"]);
+    expect(r.unresolved).toEqual([]);
+    expect(r.total).toBe(r.details.length);
   });
 });
