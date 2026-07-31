@@ -1,6 +1,9 @@
 // src/pageindex-client.ts
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  StdioClientTransport,
+  getDefaultEnvironment,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
 
 export interface DocLookup {
   getDocument(docName: string): Promise<Record<string, unknown> | null>;
@@ -48,7 +51,11 @@ export class PageindexMcpClient implements DocLookup {
     const transport = new StdioClientTransport({
       command: "npx",
       args: ["-y", "pageindex-mcp"],
-      env: { ...process.env, PAGEINDEX_API_KEY: apiKey },
+      // Only the SDK's safe allowlist (PATH, HOME, ...) plus our own key. Passing the
+      // whole parent environment would hand the host's unrelated secrets to a package
+      // `npx -y` resolves fresh on every spawn, and this server needs nothing but its own
+      // key (docs/design.md C3).
+      env: { ...getDefaultEnvironment(), PAGEINDEX_API_KEY: apiKey },
     });
     const client = new Client({ name: "citation-verify", version: "0.0.1" });
     await client.connect(transport);
