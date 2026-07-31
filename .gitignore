@@ -1,0 +1,8 @@
+node_modules/
+dist/
+
+# secrets - never commit
+key.txt
+*.key
+.env
+.env.*
