@@ -615,7 +615,7 @@ git commit -m "feat: MCP server surface exposing verify_citations"
 - Consumes: `PageindexMcpClient` (Task 3), `createServer` (Task 5).
 - Produces: an executable that connects the server over stdio - the `npx` entry point.
 
-- [ ] **Step 1: Write the implementation**
+- [x] **Step 1: Write the implementation**
 
 ```ts
 // src/index.ts
@@ -640,12 +640,12 @@ main().catch((err) => {
 });
 ```
 
-- [ ] **Step 2: Build to verify it compiles**
+- [x] **Step 2: Build to verify it compiles**
 
 Run: `npm run build`
 Expected: `dist/index.js` produced, no TypeScript errors.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/index.ts
