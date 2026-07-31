@@ -6,3 +6,4 @@ key.txt
 *.key
 .env
 .env.*
+*.env
