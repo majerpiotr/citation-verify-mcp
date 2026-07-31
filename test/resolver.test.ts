@@ -39,4 +39,19 @@ describe("verifyCitations", () => {
     expect(r.unresolved).toEqual([]);
     expect(r.unchecked).toEqual(["x-doc"]);
   });
+
+  it("asks the backend for the docName, not the raw token, while reporting the full token", async () => {
+    const requestedDocNames: string[] = [];
+    const client: DocLookup = {
+      async getDocument(docName) {
+        requestedDocNames.push(docName);
+        return { title: "Report", status: "ready" };
+      },
+    };
+    const text = "See report.pdf, p. 3 and report.pdf page 7.";
+    const r = await verifyCitations(text, client);
+
+    expect(requestedDocNames).toEqual(["report.pdf", "report.pdf"]);
+    expect(r.details.map((d) => d.token)).toEqual(["report.pdf#p3", "report.pdf#p7"]);
+  });
 });

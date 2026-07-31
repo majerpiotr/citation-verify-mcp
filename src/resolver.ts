@@ -24,13 +24,15 @@ export async function verifyCitations(text: string, client: DocLookup): Promise<
 
   for (const token of tokens) {
     const { docName } = splitToken(token);
+    let raw: Record<string, unknown> | null;
     try {
-      const raw = await client.getDocument(docName);
-      const { found, title } = interpretDocResult(raw);
-      details.push({ token, status: found ? "resolved" : "unresolved", title });
+      raw = await client.getDocument(docName);
     } catch {
       details.push({ token, status: "unchecked", title: null });
+      continue;
     }
+    const { found, title } = interpretDocResult(raw);
+    details.push({ token, status: found ? "resolved" : "unresolved", title });
   }
 
   return {
