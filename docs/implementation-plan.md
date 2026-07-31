@@ -174,7 +174,7 @@ git commit -m "chore: scaffold citation-verify-mcp package + docs"
   - `extractCitations(text: string): string[]` - unique tokens, first-seen order.
   - `splitToken(token: string): { docName: string; pages: string | null }`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 import { describe, it, expect } from "vitest";
@@ -211,12 +211,12 @@ describe("splitToken", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run test/grammar.test.ts`
 Expected: FAIL - cannot find module `../src/grammar.js`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```ts
 // src/grammar.ts
@@ -239,12 +239,12 @@ export function splitToken(token: string): { docName: string; pages: string | nu
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run test/grammar.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/grammar.ts test/grammar.test.ts
