@@ -395,7 +395,7 @@ git commit -m "feat: PageIndex DocLookup interface, result interpretation, mcp c
   - `interface VerifyResult { total: number; resolved: number; unresolved: string[]; unchecked: string[]; details: CitationDetail[] }`
   - `verifyCitations(text: string, client: DocLookup): Promise<VerifyResult>`
 
-- [ ] **Step 1: Write the failing test (with a fake client)**
+- [x] **Step 1: Write the failing test (with a fake client)**
 
 ```ts
 import { describe, it, expect } from "vitest";
@@ -442,12 +442,12 @@ describe("verifyCitations", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run test/resolver.test.ts`
 Expected: FAIL - module not found.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```ts
 // src/resolver.ts
@@ -495,12 +495,12 @@ export async function verifyCitations(text: string, client: DocLookup): Promise<
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run test/resolver.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/resolver.ts test/resolver.test.ts
