@@ -519,7 +519,7 @@ git commit -m "feat: citation resolver with resolved/unresolved/unchecked verdic
 - Consumes: `verifyCitations` (Task 4); `DocLookup` (Task 3).
 - Produces: `createServer(client: DocLookup): McpServer` - an MCP server exposing the `verify_citations` tool.
 
-- [ ] **Step 1: Write the failing test (in-memory transport, fake client)**
+- [x] **Step 1: Write the failing test (in-memory transport, fake client)**
 
 ```ts
 import { describe, it, expect } from "vitest";
@@ -557,12 +557,12 @@ describe("createServer verify_citations tool", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run test/server.test.ts`
 Expected: FAIL - module not found.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```ts
 // src/server.ts
@@ -592,12 +592,12 @@ export function createServer(client: DocLookup): McpServer {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run test/server.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/server.ts test/server.test.ts
