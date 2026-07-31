@@ -50,7 +50,20 @@ describe("unwrap", () => {
 
   it("truncates the excerpt of a large non-JSON payload in the error message", () => {
     const huge = "x".repeat(5000);
-    expect(() => unwrap({ content: [{ text: huge }] })).toThrow(/x{200}(?!x)/);
+    let message: string | null = null;
+    try {
+      unwrap({ content: [{ text: huge }] });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+
+    expect(message).not.toBeNull();
+    // Bounds the WHOLE message: well above the excerpt cap plus its prefix, far below the
+    // 5000-character payload. Removing the cap blows straight through this.
+    expect(message?.length ?? 0).toBeLessThan(400);
+    // Still diagnosable, and visibly marked as truncated.
+    expect(message).toMatch(/x{50}/);
+    expect(message).toMatch(/\.\.\.$/);
   });
 
   it("throws on JSON that is not an object", () => {

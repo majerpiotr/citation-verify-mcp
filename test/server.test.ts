@@ -57,10 +57,17 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(/do not delete them/i);
     // `unresolved` is an array of tokens, not a count.
     expect(description).toMatch(/unresolved`?\s*[-:]\s*an ARRAY of tokens/i);
-    // Extraction is pattern-based, and total: 0 is not an endorsement.
+    // Extraction is pattern-based.
     expect(description).toMatch(/only citations written as/i);
     expect(description).toMatch(/node_id/);
     expect(description).toMatch(/recognized shape/i);
+    // The false-assurance guard, asserted as one clause rather than two loose phrases:
+    // `total: 0` must be tied in the same breath to "this is NOT a clean bill of health".
+    // Without this, that sentence can be deleted while every other assertion here still
+    // passes, and an agent reads an empty verdict as "my citations are verified".
+    expect(description).toMatch(
+      /total`?:?\s*0[^.;]{0,120}not that the text is free of citations/i,
+    );
     // Existence is checked per document, not per page.
     expect(description).toMatch(/page reference[^.]*not verified/i);
   });

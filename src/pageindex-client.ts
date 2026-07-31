@@ -9,12 +9,26 @@ export interface DocLookup {
   getDocument(docName: string): Promise<Record<string, unknown> | null>;
 }
 
-// `null` is the ONLY input that means "not found" - it is `unwrap`'s reserved value for a
-// well-formed response positively stating the document does not exist. Anything else that
-// cannot be read as a statement about a document is ambiguous, and ambiguity must throw so
-// the caller records `unchecked`, never `unresolved` (CLAUDE.md hard rule 4): a consuming
-// agent deletes `unresolved` citations, so a degraded backend must not be able to trigger
-// that.
+// Three inputs, three outcomes - read this before trusting either verdict:
+//   1. `null` -> not found. This is `unwrap`'s reserved value for a well-formed response
+//      positively stating the document does not exist.
+//   2. An EMPTY object -> throws. It states nothing about the document, so it is ambiguous,
+//      and ambiguity must become `unchecked`, never `unresolved` (CLAUDE.md hard rule 4):
+//      a consuming agent deletes `unresolved` citations, so a degraded backend must not be
+//      able to trigger that.
+//   3. A non-empty object whose values are ALL falsy -> ALSO reported as not found, i.e.
+//      `unresolved`. This is the known hazard: `null` is NOT the only path to
+//      `unresolved`.
+//
+// Case 3 is an open question, not a settled rule. It is the same unconfirmed "any truthy
+// value means found" heuristic that decides the FOUND direction one line below, so both
+// verdicts rest on it. Under it, a plausible real not-found payload like {"found":false}
+// or {"exists":false,"document":null} lands on `unresolved` (right answer, luck rather than
+// evidence), while {"error":"Document not found"} or {"status":"not_found"} lands on
+// `resolved` (a fabricated citation waved through). Tightening case 3 to "only `null` means
+// not found" would fix the second at the cost of the first, trading a false-delete risk for
+// a never-catch risk with no evidence either way. Spike B (needs a live API key + network)
+// settles both at once by pinning the real discriminator. Do not guess at it before then.
 export function interpretDocResult(
   raw: Record<string, unknown> | null,
 ): { found: boolean; title: string | null } {
