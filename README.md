@@ -1,0 +1,266 @@
+# citation-verify-mcp
+
+A standalone MCP (Model Context Protocol) server that checks, deterministically, whether
+the citations in an agent's draft text actually exist in a PageIndex corpus.
+
+## Why
+
+A fabricated citation passes a human's eyeball test. It looks like a real source right up
+until someone opens it. Anyone can generate a citation; almost nobody verifies one at
+serve time, and asking a second model to check the first model's citations does not fix
+this - a model-based checker can hallucinate exactly like the checker it is checking.
+
+`citation-verify-mcp` removes the model from that trust path for the part that is
+actually checkable. Existence - does the cited document exist, does the cited page fall
+within it, does the cited node appear in its outline - is a deterministic fact. This
+server answers it by calling PageIndex, the source of truth, in code. It exposes one MCP
+tool, `verify_citations`, meant to be called in-loop by a consuming agent before it
+finalizes a response.
+
+This tool checks **existence**, not whether a document actually supports the claim made
+about it. A citation that resolves is a citation that points at something real; whether
+that something says what the agent claims it says is outside this tool's scope.
+
+## Plugging it in
+
+Add this block to your MCP host's server configuration:
+
+```json
+{
+  "mcpServers": {
+    "citation-verify": {
+      "command": "npx",
+      "args": ["-y", "citation-verify-mcp"],
+      "env": {
+        "PAGEINDEX_API_KEY": "<your-pageindex-api-key>"
+      }
+    }
+  }
+}
+```
+
+- `PAGEINDEX_API_KEY` (required): a PageIndex API key. The server uses it directly as the
+  bearer token on its own outbound HTTP MCP connection to PageIndex - it does not spawn or
+  configure anything else, and it is independent of any other PageIndex setup your host
+  may already have.
+- `PAGEINDEX_BASE_URL` (optional): overrides the PageIndex endpoint, for a self-hosted
+  PageIndex backend. Defaults to `https://api.pageindex.ai/mcp`; leave it unset for
+  PageIndex Cloud.
+
+The server refuses to start - logging to stderr and exiting non-zero - if
+`PAGEINDEX_API_KEY` is missing, blank, or looks like an unfilled placeholder (an
+unsubstituted `${...}` reference, or a literal `your-api-key`-style value). An invalid but
+plausible-looking key fails when the server connects to PageIndex, which is reported to
+the host as a startup error rather than a working-but-broken tool.
+
+**Unplugging is removing the block.** There is no other integration point.
+
+The server's API key must point at the same PageIndex account the citing agent draws
+its citations from. If it points at a different account, every citation the agent makes
+resolves as `unresolved` - a false negative that leads a consuming agent to delete good
+citations - so keep the two in sync (see `docs/design.md` section 8, constraint C1).
+
+## The tool contract
+
+`verify_citations(text: string)` takes the agent's draft text - not a pre-extracted list
+of tokens, so extraction stays in this server's deterministic code rather than depending
+on the agent to report its own citations correctly. It returns JSON in a text content
+block:
+
+```json
+{
+  "total": 3,
+  "resolved": 1,
+  "unresolved": ["missing-report.pdf"],
+  "unchecked": ["node_id:0007"],
+  "details": [
+    {
+      "token": "report.pdf#p5",
+      "status": "resolved",
+      "title": "report.pdf",
+      "suggestion": null
+    },
+    {
+      "token": "missing-report.pdf",
+      "status": "unresolved",
+      "title": null,
+      "suggestion": "Did you mean \"report.pdf\"?"
+    },
+    {
+      "token": "node_id:0007",
+      "status": "unchecked",
+      "title": null,
+      "suggestion": "A node id alone cannot be verified: node ids are scoped to a single document's own numbering, so this citation must also name the document it belongs to."
+    }
+  ]
+}
+```
+
+- `total` is the count of **distinct** recognized-shape citations - repeated citations of
+  the same token collapse to one.
+- `resolved` is a count. `unresolved` and `unchecked` are arrays of tokens.
+- `details` carries one entry per distinct citation: `token`, `status`
+  (`resolved` | `unresolved` | `unchecked`), `title` (the resolved document's name, or
+  `null`), and `suggestion` (a string worth acting on, or `null`).
+- `suggestion` is populated whenever it helps explain a non-`resolved` verdict - a
+  near-miss document name for an `unresolved` document, the real page count when a cited
+  page falls outside it, an explanation of which half of a combined page-plus-node
+  citation failed, or (for a bare node id) why it cannot be checked at all. It can also be
+  set on a **`resolved`** verdict: when PageIndex reports no page count for a document, a
+  cited page is not bounds-checked and the citation still resolves, with `suggestion`
+  saying the page itself was never verified.
+- `token` is a **canonical** form, not the agent's verbatim text - map it back to the
+  draft before acting on it. Shapes:
+  - `<document>` - a document with no page or node.
+  - `<document>#p<N>` or `<document>#p<N>-<M>` - a document with a page or page range.
+  - `<document>#n<node-id>` - a document with a node.
+  - `<document>#p<N>&n<node-id>` - a document with both a page and a node, in one
+    citation (see below).
+  - `node_id:<id>` - a bare node id with no document, always `unchecked`.
+- If the MCP call itself fails, the tool returns an MCP error result instead of this JSON.
+  Treat every citation in the text as `unchecked` in that case, never as `unresolved`.
+
+## Recognized citation shapes
+
+The grammar is fixed, not learned, and only `.pdf` documents are recognized. A citation
+to any other extension (`.docx`, `.txt`, `.md`, ...) is not extracted at all.
+
+**Document.** `<name>.pdf`, matched **case-sensitively** against the corpus (PageIndex's
+own lookup is case-sensitive, so a citation of `Report.PDF` will not match an existing
+`report.pdf`). The `.pdf` extension itself is matched case-insensitively.
+
+**Page.** Optionally follows a document, on the **same line**, with nothing else between
+them but a recognized separator:
+- glued directly, or after a `,` or `;`, or after one connector word from a closed list
+  (`on`, `at`, `see`), or opened by `(` or `[`.
+- Keyword `p.`, `pp.`, `page`, or `pages` (case-insensitive).
+- A single page (`p.5`) or a range (`pp. 5-7`, `pages 5 to 7`). A range separator is a
+  hyphen, an en dash, or the word "to" - the word "through" or any other phrasing is not
+  recognized.
+- A page marker on a different line from its document is not recognized - only a page
+  form written directly against its document counts.
+
+**Node.** `node_id: <id>` or `node_id=<id>` (keyword case-insensitive), in either order
+relative to the document and the page. It binds to the **nearest document mention in the
+same sentence** (a sentence never crosses a newline). A document with both a page and a
+node in the same sentence produces **one combined citation**
+(`<name>.pdf#p<N>&n<node-id>`), not two.
+
+**A bare `node_id: <id>` with no document anywhere in the same sentence is `unchecked`,
+never `unresolved`.** Node numbering is per-document - every document has a node
+`"0000"` - so a node id alone identifies nothing verifiable, and reporting it
+`unresolved` would tell a consuming agent to delete a citation that was never actually
+checked.
+
+**Quoted names.** A document name containing spaces must be wrapped in double quotes or
+backticks to be read exactly: `"Annual Report.pdf"`. A quoted name is honoured verbatim
+only when it is genuinely file-name-shaped:
+- at most 4 space-separated words,
+- at most 80 characters,
+- no apostrophe, `&`, comma, colon, or non-ASCII character.
+
+A name that fails that shape check - and any **unquoted** name containing a space - falls
+back to being read as its **last space-free segment**: `Annual Report 2024.pdf` is read as
+`2024.pdf`, a different document. This never produces a false `resolved` (the wrong,
+truncated name simply resolves or fails to resolve on its own merits), but a real citation
+to a space-bearing name goes unverified unless it is quoted and shape-valid - check
+`title` on a `resolved` verdict to catch a truncated match that happened to resolve to
+something else.
+
+Single quotes are **not** a delimiter, deliberately - ordinary apostrophes in prose
+("don't", "the team's") would otherwise be misread as opening a document name.
+
+**Not recognized:**
+- Any document extension other than `.pdf`.
+- A page phrased as words ("page five"), a Roman numeral, or without one of the four page
+  keywords.
+- A page marker separated from its document by more prose than the closed connector list
+  allows, or on a different line.
+- A page range joined by any word other than "to".
+- A document name with spaces, unquoted, or quoted but failing the file-name shape check
+  (more than 4 words, over 80 characters, or carrying an apostrophe/`&`/comma/colon/
+  non-ASCII character) - both fall back to a truncated, effectively-different citation
+  rather than being dropped.
+- A single-quoted name (`'report.pdf'`).
+- A bare `node_id` with no document in its sentence - extracted, but always `unchecked`.
+
+## What is and is not verified
+
+- **Document existence**: checked against PageIndex by exact, case-sensitive file name.
+- **Page bounds**: checked against the document's real page count, but **only when
+  PageIndex reports one**. When it does not, the citation's document/node verdict stands
+  unaffected and the page is simply not bounds-checked - a `resolved` verdict can
+  therefore still carry an unverified page, flagged via `suggestion`.
+- **Node membership**: checked against the document's real outline, walked recursively.
+- **Not verified, ever**: whether the cited document actually supports the claim the agent
+  makes about it. This tool proves a source exists; it does not read it.
+
+## Host integration
+
+Integrating a specific host's agent behavior is outside this project's scope, but
+generically: instruct the agent to call `verify_citations` on its own draft before
+finalizing.
+
+- For every `unresolved` citation: remove the claim, or search again and replace it with
+  a citation that actually resolves.
+- For every `unchecked` citation: **leave it in place**, optionally with a note. Do not
+  delete it. `unchecked` means the corpus was never consulted for that citation - because
+  of a bare node id, a timeout, or the backend being unreachable - so it may well be
+  valid. Deleting it on a backend outage would delete good citations, which is the exact
+  failure this server exists to prevent.
+- `total: 0` means no citation of a recognized shape was found in the draft - it is not a
+  clean bill of health, and not proof the text has no citations. If citations exist in
+  another form, they need to be rewritten into a recognized shape (see above) before they
+  can be checked.
+
+## Development
+
+```bash
+npm install                          # once
+npm test                             # full unit suite, offline, no key or network needed
+npx vitest run test/<file>.test.ts   # a single test file
+npm run build                        # tsc -> dist/
+```
+
+The integration test (`test/integration.test.ts`) is the only suite that touches the real
+PageIndex backend. It is credential-gated: it skips cleanly, never fails, when its
+environment variables are absent. To run it, pass the key by substitution so its value
+never appears in the command text or shell history:
+
+```bash
+PAGEINDEX_API_KEY="$(cat key.txt)" \
+CITATION_VERIFY_TEST_DOC_NAME="report.pdf" \
+CITATION_VERIFY_TEST_NODE_ID="0003" \
+npx vitest run test/integration.test.ts
+```
+
+- `PAGEINDEX_API_KEY`: a live key, read from `key.txt` in the example above (that file is
+  gitignored - never commit a real key, never print or echo it).
+- `CITATION_VERIFY_TEST_DOC_NAME` (required to run the suite): the exact, case-sensitive
+  file name of a document that really exists in that account.
+- `CITATION_VERIFY_TEST_NODE_ID` (optional): a node id that really exists in that
+  document's outline. When absent, the one test that needs it is skipped rather than
+  guessed at.
+
+## Known limits
+
+- **The citation shapes a consuming agent actually emits have not been confirmed against
+  a real system.** The grammar above was built against the design's assumptions and the
+  backend's observed behavior, not against representative agent output, so its coverage
+  is provisional. If an agent's real citations do not fit these shapes, they will not be
+  extracted at all - `total` simply undercounts, silently.
+- Only `.pdf` documents are recognized; there is no support for any other extension.
+- An unquoted or shape-rejected document name containing a space is read as its last
+  space-free segment, not as the real name - see "Quoted names" above.
+- `PAGEINDEX_FOLDER_ID` is **not implemented**. Nothing in this server scopes a lookup to
+  a folder; every document lookup resolves against the account's whole corpus. If two
+  documents in the same account share a file name, existence still answers correctly, but
+  identity does not - the lookup resolves one of them without saying which.
+- The API key's capability exceeds what this server uses: the PageIndex tool surface it
+  authenticates includes a document-deletion tool, which this server never calls, but a
+  leaked or over-scoped key still carries that capability. Scope the key as narrowly as
+  PageIndex allows.
+- A citation combining a page and a node in one sentence produces a single combined
+  citation. If the page is valid but the node is not (or vice versa), the whole citation
+  is reported `unresolved` - there is no way to report "half of this citation failed" in
+  the token/status shape, only in `suggestion`.
