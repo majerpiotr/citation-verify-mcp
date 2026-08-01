@@ -122,11 +122,29 @@ real document rather than accepted on trust.
     { "title": "...", "node_id": "0002", "start_index": 6, "end_index": 6,
       "nodes": [ { "title": "...", "node_id": "0003", "start_index": 6, "end_index": 6 } ] }
   ],
-  "pagination": { "has_more": false } }
+  "next_steps": { ... } }
 ```
 
-Nodes nest under a `nodes` array, so the tree must be walked recursively. Responses are
-paginated by a `part` argument; `pagination.has_more` signals more parts.
+Nodes nest under a `nodes` array, so the tree must be walked recursively.
+
+### Pagination - observed, and narrower than the schema suggests
+
+The tool's schema documents a `part` argument and a `pagination.has_more` flag, but on a
+real 56-page document (32 nodes, single part) the behaviour is:
+
+- **`pagination` is ABSENT from the response entirely** - not `{"has_more": false}`, the
+  key simply does not exist. Code must therefore treat a missing `pagination` as "this was
+  the last part". Treating it as an error would make node verification fail on every
+  normal document.
+- **`part` is 1-based.** `part: 0` is rejected with a validation error
+  (`too_small, minimum: 1`).
+- **An out-of-range `part` returns the full structure again**, not an empty one:
+  `part: 2` and `part: 99` both returned the same 32 nodes as `part: 1`. So over-paging
+  duplicates rather than truncating, which a `Set` absorbs harmlessly.
+
+A multi-part outline was never produced, so the `has_more: true` continuation path remains
+unobserved. Code that walks it must still refuse to return a partial set: a truncated walk
+makes a real node look absent, which becomes a false `unresolved`.
 
 ## 6. `node_id` is scoped to a document - this invalidates the planned grammar
 
