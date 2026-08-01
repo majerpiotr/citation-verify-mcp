@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   if (!apiKey || !isUsableApiKey(apiKey)) {
     console.error(
       "PAGEINDEX_API_KEY is missing, empty, or looks like a placeholder value. " +
-        "Set a real key in the mcp_servers env block. To point at a self-hosted " +
+        "Set a real key in the mcpServers env block. To point at a self-hosted " +
         "backend instead of the default PageIndex endpoint, set PAGEINDEX_BASE_URL.",
     );
     // process.exitCode (not process.exit) so buffered stderr writes flush before the
