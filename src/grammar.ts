@@ -125,26 +125,55 @@ const NODE_ID_KEYWORD = ci("node_id");
 // engine to fail every length from 1..MAX_PAGE_DIGITS in turn when more digits follow.
 const MAX_PAGE_DIGITS = 6;
 const PAGE_NUMBER = String.raw`\d{1,${MAX_PAGE_DIGITS}}(?!\d)`;
-// Accepts a hyphen or an en dash between the two numbers of a range - the en dash is what
-// most editors produce for "5-7" once autocorrect/smart-punctuation gets involved. "5 to 7"
-// remains unsupported (a documented gap, not a bug): under-checking a valid range is safe,
-// unlike mis-checking, so it is left for later rather than risking a speculative pattern.
-const RANGE_SEP = String.raw`(?:-|–)`;
+// Accepts a hyphen, an en dash, or the word "to" (surrounded by mandatory horizontal
+// whitespace, so it cannot glue to the digits either side) between the two numbers of a
+// range. The en dash is what most editors produce for "5-7" once autocorrect/smart-
+// punctuation gets involved; "to" is what an agent writing prose naturally produces
+// ("pages 5 to 7") - dropping page 7 silently there was a real, tool-description-audited
+// false `resolved` (a citation partly fabricated reads as fully verified), not merely a
+// documented gap, so it is fixed rather than left as under-checking. Case-insensitive via
+// ci(), matching every other keyword in this grammar. This constant is shared with the
+// quoted-name page pattern too, so a quoted name's page range gets "to" support for free.
+const RANGE_SEP = String.raw`(?:-|–|[ \t]+${ci("to")}[ \t]+)`;
 
 // Every bare (unquoted) document mention. Used both to emit doc-only citations and as one
 // source of anchors a node id can bind to (see the binding pass below).
 const RE_DOC = new RegExp(DOC_NAME_PATTERN, "g");
 
-// A document immediately followed by a page marker, with nothing but an optional , or ;
-// and HORIZONTAL whitespace between them - no other words, and never a newline. Judgment
-// call (docs/rework-plan.md Task R2 leaves the exact proximity open): a page reference in a
-// real draft is almost always glued to the name it narrows ("report.pdf p.5"), so requiring
-// tight adjacency avoids accidentally pairing a page number with a document mentioned
-// earlier in the same sentence but not the one the page actually refers to. Restricting the
-// separator to `[ \t]` rather than `\s` specifically excludes newlines: a page marker that
-// starts a new line belongs to different prose, not the document named above it.
+// Tool-description audit: "report.pdf (page 5)" and "report.pdf on page 5" are common
+// real prose forms that the plain [,;]? separator below does not reach, so the page claim
+// was silently dropped (a citation reported `resolved` with the page half never checked -
+// "silence reads as endorsement"). Widened to a CLOSED set of forms, deliberately not an
+// open-ended "any short word" rule:
+//   - an opening ( or [ immediately before the keyword (optional surrounding horizontal
+//     whitespace); the matching closer after the page number is optionally consumed as
+//     punctuation, never captured, and never required (an unbalanced "(page 5" still
+//     binds, since the open bracket alone is already unambiguous)
+//   - one connector word from a CLOSED list - on, at, see - optionally preceded by the
+//     existing , or ;, with MANDATORY whitespace on both sides so it can only match a
+//     whole standalone word, never a substring of a longer one
+// Both new forms stay same-line only (the `\b` word boundaries and `[ \t]` classes never
+// include `\n`) - the newline restriction below is what stops a page marker on a LATER
+// line from binding to a document on an EARLIER one, and widening this separator must not
+// reopen that. The connector list being closed - not "any word" - is what stops the
+// separator from spanning an intervening document mention: "a.pdf and b.pdf on page 5"
+// fails to match starting at "a.pdf" (the mandatory whitespace right after a connector
+// attempt can't reach past "and", which isn't in the list), so it can only match starting
+// at "b.pdf".
+const CONNECTOR_WORD = String.raw`\b(?:${ci("on")}|${ci("at")}|${ci("see")})\b`;
+const OPEN_BRACKET = String.raw`[(\[]`;
+const CLOSE_BRACKET = String.raw`[)\]]?`;
+const DOC_PAGE_SEP = String.raw`(?:[,;]?[ \t]*(?:${CONNECTOR_WORD}[ \t]+)?|[ \t]*${OPEN_BRACKET}[ \t]*)`;
+
+// A document followed by a page marker on the SAME LINE, separated by DOC_PAGE_SEP above -
+// no other words beyond the closed connector list, and never a newline. Judgment call
+// (docs/rework-plan.md Task R2 leaves the exact proximity open): a page reference in a
+// real draft is almost always glued to the name it narrows ("report.pdf p.5") or joined by
+// one of the forms above, so this stops short of arbitrary same-sentence distance, which
+// would risk pairing a page number with the wrong document when a sentence mentions more
+// than one.
 const RE_DOC_PAGE = new RegExp(
-  String.raw`(${DOC_NAME_PATTERN})[,;]?[ \t]*${PAGE_KEYWORD}[ \t]*(${PAGE_NUMBER})(?:${RANGE_SEP}(${PAGE_NUMBER}))?`,
+  String.raw`(${DOC_NAME_PATTERN})${DOC_PAGE_SEP}${PAGE_KEYWORD}[ \t]*(${PAGE_NUMBER})(?:${RANGE_SEP}(${PAGE_NUMBER}))?${CLOSE_BRACKET}`,
   "g",
 );
 

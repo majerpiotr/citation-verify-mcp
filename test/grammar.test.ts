@@ -454,3 +454,69 @@ describe("extractCitations - re-review fix: Minor", () => {
     ]);
   });
 });
+
+describe("extractCitations - word-form page range 'to' (tool-description audit, addition 1)", () => {
+  it("recognizes 'pages N to M' as a range, not a truncated single page", () => {
+    expect(extractCitations("See report.pdf pages 5 to 7 for details.")).toEqual([
+      { token: "report.pdf#p5-7", docName: "report.pdf", pages: { from: 5, to: 7 }, nodeId: null },
+    ]);
+  });
+
+  it("recognizes 'pp.N to M' as a range too", () => {
+    expect(extractCitations("See report.pdf pp.5 to 7 for details.")).toEqual([
+      { token: "report.pdf#p5-7", docName: "report.pdf", pages: { from: 5, to: 7 }, nodeId: null },
+    ]);
+  });
+
+  it("still accepts the existing hyphen and en-dash separators (regression)", () => {
+    expect(extractCitations("See report.pdf pages 5-7 for details.")).toEqual([
+      { token: "report.pdf#p5-7", docName: "report.pdf", pages: { from: 5, to: 7 }, nodeId: null },
+    ]);
+  });
+});
+
+describe("extractCitations - page markers not glued to the name (tool-description audit, addition 2)", () => {
+  it("binds a page marker wrapped in parentheses", () => {
+    expect(extractCitations("See report.pdf (page 5) for details.")).toEqual([
+      { token: "report.pdf#p5", docName: "report.pdf", pages: { from: 5, to: 5 }, nodeId: null },
+    ]);
+  });
+
+  it("binds a page marker wrapped in square brackets, with a keyword abbreviation", () => {
+    expect(extractCitations("See report.pdf [p. 5] for details.")).toEqual([
+      { token: "report.pdf#p5", docName: "report.pdf", pages: { from: 5, to: 5 }, nodeId: null },
+    ]);
+  });
+
+  it("binds a page marker introduced by the connector word 'on'", () => {
+    expect(extractCitations("See report.pdf on page 5 for details.")).toEqual([
+      { token: "report.pdf#p5", docName: "report.pdf", pages: { from: 5, to: 5 }, nodeId: null },
+    ]);
+  });
+
+  it("binds a page marker introduced by ', see' (comma plus connector word)", () => {
+    expect(extractCitations("See report.pdf, see page 5 for details.")).toEqual([
+      { token: "report.pdf#p5", docName: "report.pdf", pages: { from: 5, to: 5 }, nodeId: null },
+    ]);
+  });
+
+  it("does not bind a bracketed page marker across a newline", () => {
+    // The separator widening (parens/brackets, connector words) must stay confined to
+    // horizontal whitespace, exactly like the original comma/semicolon separator - a page
+    // marker starting a new line is still unrelated prose, not a narrower reference to the
+    // document named above it.
+    expect(extractCitations("See report.pdf\n(page 5) for details.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("binds an 'on page N' marker to the nearer document, not one mentioned earlier in the sentence", () => {
+    // The connector-word list is closed (on/at/see only) and requires the keyword to
+    // follow immediately after mandatory whitespace, so it can never span an intervening
+    // document mention the way an open-ended "any word" rule could.
+    expect(extractCitations("See a.pdf and b.pdf on page 5")).toEqual([
+      { token: "a.pdf", docName: "a.pdf", pages: null, nodeId: null },
+      { token: "b.pdf#p5", docName: "b.pdf", pages: { from: 5, to: 5 }, nodeId: null },
+    ]);
+  });
+});
