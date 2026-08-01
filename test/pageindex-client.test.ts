@@ -1,90 +1,157 @@
+// test/pageindex-client.test.ts
 import { describe, it, expect } from "vitest";
-import { interpretDocResult, unwrap } from "../src/pageindex-client.js";
+import { interpretGetDocument, collectNodeIds } from "../src/pageindex-client.js";
 
-describe("interpretDocResult", () => {
-  it("treats null as not found", () => {
-    expect(interpretDocResult(null)).toEqual({ found: false, title: null });
-  });
-  // An empty envelope is ambiguous - it is not a positive statement that the document
-  // is absent, so it must become `unchecked`, never `unresolved` (CLAUDE.md hard rule 4).
-  it("throws on an empty object rather than calling it not found", () => {
-    expect(() => interpretDocResult({})).toThrow();
-  });
-  it("treats an object with all-falsy values as not found", () => {
-    expect(interpretDocResult({ title: "", status: null })).toEqual({ found: false, title: null });
-  });
-  it("treats a populated doc as found and extracts title", () => {
-    expect(interpretDocResult({ title: "Some Doc", status: "ready" })).toEqual({
+// Builds a minimal CallToolResult-shaped envelope: a single text content block whose
+// text is the JSON-stringified body, matching what the SDK's Client.callTool() returns
+// (see node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.d.ts).
+function textResult(body: unknown, isError = false): unknown {
+  return { content: [{ type: "text", text: JSON.stringify(body) }], isError };
+}
+
+describe("interpretGetDocument", () => {
+  // Shapes below are taken verbatim from docs/spike-b-findings.md section 4.
+  it("reports a found document from a success body", () => {
+    const res = textResult({
+      success: true,
+      name: "some-doc.pdf",
+      description: "A test document",
+      status: "completed",
+      created_at: "2026-01-01T00:00:00Z",
+      page_count: 56,
+      folder_id: null,
+    });
+    expect(interpretGetDocument(res)).toEqual({
       found: true,
-      title: "Some Doc",
-    });
-  });
-  it("is found even without a title field", () => {
-    expect(interpretDocResult({ status: "ready" })).toEqual({ found: true, title: null });
-  });
-});
-
-describe("unwrap", () => {
-  it("returns structuredContent when present", () => {
-    expect(unwrap({ structuredContent: { title: "Doc", status: "ready" } })).toEqual({
-      title: "Doc",
-      status: "ready",
+      doc: { name: "some-doc.pdf", pageCount: 56 },
     });
   });
 
-  it("parses a content block with JSON text", () => {
-    expect(unwrap({ content: [{ text: '{"title":"Doc"}' }] })).toEqual({ title: "Doc" });
+  it("reports pageCount null when page_count is missing (still found)", () => {
+    const res = textResult({ success: true, name: "some-doc.pdf", status: "completed" });
+    expect(interpretGetDocument(res)).toEqual({
+      found: true,
+      doc: { name: "some-doc.pdf", pageCount: null },
+    });
   });
 
-  it("returns null for a content block whose JSON text is literally null", () => {
-    expect(unwrap({ content: [{ text: "null" }] })).toBeNull();
+  it("reports pageCount null when page_count is not a number", () => {
+    const res = textResult({ success: true, name: "some-doc.pdf", page_count: "56" });
+    expect(interpretGetDocument(res)).toEqual({
+      found: true,
+      doc: { name: "some-doc.pdf", pageCount: null },
+    });
   });
 
-  // Unparseable text is not a document. Reporting it as a payload would let a plain-text
-  // backend error ("401 Unauthorized") be read as a resolved document.
-  it("throws on a content block with non-JSON text", () => {
-    expect(() => unwrap({ content: [{ text: "401 Unauthorized: invalid API key" }] })).toThrow(
-      /401 Unauthorized/,
+  it("reports not found with the similar file list populated", () => {
+    const res = textResult(
+      {
+        error: 'Document not found. Did you mean: "some-doc.pdf"?',
+        errorCode: "NOT_FOUND",
+        doc_name: "some-dc.pdf",
+        similar_files: ["some-doc.pdf"],
+      },
+      true,
     );
+    expect(interpretGetDocument(res)).toEqual({ found: false, similar: ["some-doc.pdf"] });
   });
 
-  it("truncates the excerpt of a large non-JSON payload in the error message", () => {
-    const huge = "x".repeat(5000);
+  it("reports not found with an empty similar file list", () => {
+    const res = textResult(
+      { error: "Document not found.", errorCode: "NOT_FOUND", doc_name: "missing.pdf", similar_files: [] },
+      true,
+    );
+    expect(interpretGetDocument(res)).toEqual({ found: false, similar: [] });
+  });
+
+  it("reports not found when similar_files is missing entirely", () => {
+    const res = textResult(
+      { error: "Document not found.", errorCode: "NOT_FOUND", doc_name: "missing.pdf" },
+      true,
+    );
+    expect(interpretGetDocument(res)).toEqual({ found: false, similar: [] });
+  });
+
+  // The trap Spike B found: isError is the SAME channel as a backend failure. Only a
+  // POSITIVE NOT_FOUND code may become `unresolved`; anything else must throw so it
+  // becomes `unchecked` (CLAUDE.md hard rule 4).
+  it("throws on an isError body with a different errorCode", () => {
+    const res = textResult({ error: "Invalid arguments", errorCode: "VALIDATION_ERROR" }, true);
+    expect(() => interpretGetDocument(res)).toThrow();
+  });
+
+  it("throws on an isError body that is not JSON", () => {
+    const res = {
+      content: [
+        {
+          type: "text",
+          text: "Invalid arguments for tool get_document: doc_name ... expected string, received undefined",
+        },
+      ],
+      isError: true,
+    };
+    expect(() => interpretGetDocument(res)).toThrow();
+  });
+
+  it("throws on an empty or garbage envelope", () => {
+    expect(() => interpretGetDocument({})).toThrow();
+    expect(() => interpretGetDocument(null)).toThrow();
+    expect(() => interpretGetDocument({ content: [] })).toThrow();
+    expect(() => interpretGetDocument("garbage")).toThrow();
+  });
+
+  it("bounds the thrown message length for a huge payload", () => {
+    const huge = { content: [{ type: "text", text: "x".repeat(5000) }], isError: false };
     let message: string | null = null;
     try {
-      unwrap({ content: [{ text: huge }] });
+      interpretGetDocument(huge);
     } catch (err) {
       message = err instanceof Error ? err.message : String(err);
     }
-
     expect(message).not.toBeNull();
-    // Bounds the WHOLE message: well above the excerpt cap plus its prefix, far below the
-    // 5000-character payload. Removing the cap blows straight through this.
+    // Bounds the WHOLE message: well above the excerpt cap plus its prefix, far below
+    // the 5000-character payload. Removing the cap blows straight through this.
     expect(message?.length ?? 0).toBeLessThan(400);
     // Still diagnosable, and visibly marked as truncated.
     expect(message).toMatch(/x{50}/);
     expect(message).toMatch(/\.\.\.$/);
   });
+});
 
-  it("throws on JSON that is not an object", () => {
-    expect(() => unwrap({ content: [{ text: "false" }] })).toThrow();
-    expect(() => unwrap({ content: [{ text: "0" }] })).toThrow();
-    expect(() => unwrap({ content: [{ text: '"a string"' }] })).toThrow();
+describe("collectNodeIds", () => {
+  it("collects ids from a flat structure", () => {
+    const structure = [
+      { title: "Intro", node_id: "0000", start_index: 1, end_index: 1, summary: "..." },
+      { title: "Body", node_id: "0001", start_index: 2, end_index: 5, summary: "..." },
+    ];
+    expect(collectNodeIds(structure)).toEqual(new Set(["0000", "0001"]));
   });
 
-  it("throws on a JSON array payload", () => {
-    expect(() => unwrap({ content: [{ text: "[1,2]" }] })).toThrow();
+  it("collects ids from a nested structure", () => {
+    const structure = [
+      { title: "Intro", node_id: "0000", start_index: 1, end_index: 1 },
+      {
+        title: "Chapter",
+        node_id: "0002",
+        start_index: 6,
+        end_index: 6,
+        nodes: [{ title: "Section", node_id: "0003", start_index: 6, end_index: 6 }],
+      },
+    ];
+    expect(collectNodeIds(structure)).toEqual(new Set(["0000", "0002", "0003"]));
   });
 
-  it("throws when content is empty", () => {
-    expect(() => unwrap({ content: [] })).toThrow();
+  it("returns an empty set for an empty structure", () => {
+    expect(collectNodeIds([])).toEqual(new Set());
   });
 
-  it("throws when the content block has no text field", () => {
-    expect(() => unwrap({ content: [{}] })).toThrow();
+  // A partial set would make a real node id look absent and produce a false
+  // `unresolved`, so a shape that cannot be read must throw, not be skipped.
+  it("throws on a malformed entry missing node_id", () => {
+    expect(() => collectNodeIds([{ title: "Intro" }])).toThrow();
   });
 
-  it("throws when the tool call reports isError", () => {
-    expect(() => unwrap({ isError: true, content: [{ text: "Error: PageIndex API returned 503" }] })).toThrow();
+  it("throws when the structure itself is not an array", () => {
+    expect(() => collectNodeIds({ not: "an array" })).toThrow();
   });
 });
