@@ -2,7 +2,7 @@
 // src/index.ts
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { isUsableApiKey } from "./api-key.js";
-import { PageindexMcpClient } from "./pageindex-client.js";
+import { PageindexHttpClient } from "./pageindex-client.js";
 import { createServer } from "./server.js";
 
 async function main(): Promise<void> {
@@ -15,12 +15,22 @@ async function main(): Promise<void> {
   if (!apiKey || !isUsableApiKey(apiKey)) {
     console.error(
       "PAGEINDEX_API_KEY is missing, empty, or looks like a placeholder value. " +
-        "Set a real key in the mcp_servers env block.",
+        "Set a real key in the mcp_servers env block. To point at a self-hosted " +
+        "backend instead of the default PageIndex endpoint, set PAGEINDEX_BASE_URL.",
     );
+    // process.exitCode (not process.exit) so buffered stderr writes flush before the
+    // process exits naturally: under an MCP host, stderr is a pipe, and Node's writes
+    // to a pipe are asynchronous - process.exit would risk truncating this message.
     process.exitCode = 1;
     return;
   }
-  const client = await PageindexMcpClient.connect(apiKey);
+  // Connecting is the load-bearing step for CLAUDE.md hard rule 4: if this throws (bad
+  // key, unreachable backend, anything), `main()` must reject and fall through to the
+  // top-level `.catch` below rather than starting a server with no working client. A
+  // server that answered lookups without a real connection could never distinguish a
+  // real absence from an outage, so unresolved-vs-unchecked would collapse right here -
+  // there is no stub or degraded fallback to reach for.
+  const client = await PageindexHttpClient.connect(apiKey);
   const server = createServer(client);
   await server.connect(new StdioServerTransport());
 }
