@@ -137,8 +137,18 @@ yet run).
 - The document name is matched case-sensitively, because the backend's lookup is
   case-sensitive; the page and node keywords (`p.`, `pp.`, `page`, `pages`, `node_id`) are
   not.
-- Page ranges written with the word "to" (e.g. "pages 5 to 7") are not recognized; only a
-  hyphen or en dash range (`5-7`) is.
+- Page ranges accept a hyphen, an en dash, or the word "to": `5-7`, `5 to 7`.
+
+  > Corrected after the grammar was hardened: this section previously stated that a "to"
+  > range was not recognized. It was in fact recognized as its FIRST PAGE ONLY, silently
+  > dropping the rest, so `pages 5 to 7` was checked as page 5 and could return `resolved`
+  > while page 7 was fabricated. The grammar now reads the whole range.
+
+- A page marker must sit on the SAME LINE as the document name. It may follow the name
+  directly, after an optional `,` or `;`, inside brackets (`report.pdf (page 5)`), or after
+  one of the connectors `on`, `at`, `see`. Written any other way - on the next line, or
+  separated from its name by another document mention - the page is not extracted and
+  therefore not checked, while the document verdict still stands.
 
 ## 6. Connection and configuration
 
@@ -147,17 +157,20 @@ yet run).
 > forward it to. The same key now authenticates this server's own outbound HTTP MCP
 > connection to PageIndex directly (section 3).
 
-Registered by the host under `mcp_servers` as a stdio-spawned process - this hop is
+Registered by the host under `mcpServers` as a stdio-spawned process - this hop is
 unchanged: the project is still distributed via `npx` (section 2's goals), and the host
 still talks to it over stdio:
 
-```yaml
-mcp_servers:
-  citation-verify:
-    command: npx
-    args: ["-y", "citation-verify-mcp"]
-    env:
-      PAGEINDEX_API_KEY: "${PAGEINDEX_API_KEY}"
+```json
+{
+  "mcpServers": {
+    "citation-verify": {
+      "command": "npx",
+      "args": ["-y", "citation-verify-mcp"],
+      "env": { "PAGEINDEX_API_KEY": "${PAGEINDEX_API_KEY}" }
+    }
+  }
+}
 ```
 
 - Plug = add this block. Unplug = remove it.
