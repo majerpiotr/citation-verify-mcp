@@ -1,91 +1,265 @@
+// test/resolver.test.ts
+//
+// Exercises verifyCitations against a FAKE DocLookup - no network, no key. Every case
+// below traces back to a rule in docs/rework-plan.md's Task R3 or to CLAUDE.md hard rule
+// 4 (unresolved requires a positive miss; anything ambiguous is unchecked). Call counts on
+// the fake are asserted explicitly wherever the per-call dedup rule applies - the dedup is
+// otherwise invisible from outcomes alone.
 import { describe, it, expect } from "vitest";
 import { verifyCitations } from "../src/resolver.js";
-import type { DocLookup } from "../src/pageindex-client.js";
+import type { DocLookup, DocLookupResult } from "../src/pageindex-client.js";
 
-function fakeClient(map: Record<string, Record<string, unknown> | null | "throw">): DocLookup {
-  return {
+interface FakeConfig {
+  documents?: Record<string, DocLookupResult | "throw">;
+  nodeIds?: Record<string, Set<string> | "throw">;
+}
+
+interface FakeClient {
+  client: DocLookup;
+  getDocumentCalls: string[];
+  getNodeIdsCalls: string[];
+}
+
+function fakeClient(config: FakeConfig): FakeClient {
+  const getDocumentCalls: string[] = [];
+  const getNodeIdsCalls: string[] = [];
+  const client: DocLookup = {
     async getDocument(docName) {
-      const v = map[docName];
+      getDocumentCalls.push(docName);
+      const v = config.documents?.[docName];
       if (v === "throw") throw new Error("backend down");
-      return v ?? null;
+      if (v === undefined) throw new Error(`test fixture missing for getDocument("${docName}")`);
+      return v;
+    },
+    async getNodeIds(docName) {
+      getNodeIdsCalls.push(docName);
+      const v = config.nodeIds?.[docName];
+      if (v === "throw") throw new Error("backend down");
+      if (v === undefined) throw new Error(`test fixture missing for getNodeIds("${docName}")`);
+      return v;
     },
   };
+  return { client, getDocumentCalls, getNodeIdsCalls };
 }
 
 describe("verifyCitations", () => {
-  it("classifies resolved, unresolved, unchecked", async () => {
-    const text = "node_id: real-doc node_id: fake-doc node_id: down-doc";
-    const client = fakeClient({
-      "real-doc": { title: "Real Doc", status: "ready" },
-      // `null` is how the backend contract states "this document does not exist"
-      // (see unwrap in src/pageindex-client.ts).
-      "fake-doc": null,
-      "down-doc": "throw",
-    });
-    const r = await verifyCitations(text, client);
-    expect(r.total).toBe(3);
-    expect(r.resolved).toBe(1);
-    expect(r.unresolved).toEqual(["fake-doc"]);
-    expect(r.unchecked).toEqual(["down-doc"]);
-    expect(r.details).toContainEqual({ token: "real-doc", status: "resolved", title: "Real Doc" });
-  });
-
-  it("returns an empty verdict for no citations", async () => {
-    const r = await verifyCitations("plain prose", fakeClient({}));
+  it("returns an empty verdict for text with no citations", async () => {
+    const { client } = fakeClient({});
+    const r = await verifyCitations("plain prose with no citations at all.", client);
     expect(r).toEqual({ total: 0, resolved: 0, unresolved: [], unchecked: [], details: [] });
   });
 
-  it("never marks a backend failure as unresolved", async () => {
-    const client = fakeClient({ "x-doc": "throw" });
-    const r = await verifyCitations("node_id: x-doc", client);
-    expect(r.unresolved).toEqual([]);
-    expect(r.unchecked).toEqual(["x-doc"]);
+  it("resolves a document that exists", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+    });
+    const r = await verifyCitations("See report.pdf.", client);
+    expect(r.details).toEqual([
+      { token: "report.pdf", status: "resolved", title: "report.pdf", suggestion: null },
+    ]);
+    expect(r.total).toBe(1);
+    expect(r.resolved).toBe(1);
   });
 
-  it("treats an ambiguous backend payload as unchecked, never unresolved", async () => {
-    const client: DocLookup = {
-      async getDocument() {
-        // An empty envelope from a degraded backend: not a positive statement of absence.
-        return {};
-      },
-    };
-    const r = await verifyCitations("node_id: maybe-doc", client);
-    expect(r.unresolved).toEqual([]);
-    expect(r.unchecked).toEqual(["maybe-doc"]);
+  it("reports a missing document as unresolved with a suggestion from the near-miss hint", async () => {
+    const { client } = fakeClient({
+      documents: { "typo.pdf": { found: false, similar: ["report.pdf"] } },
+    });
+    const r = await verifyCitations("See typo.pdf.", client);
+    expect(r.details).toEqual([
+      { token: "typo.pdf", status: "unresolved", title: null, suggestion: 'Did you mean "report.pdf"?' },
+    ]);
+    expect(r.unresolved).toEqual(["typo.pdf"]);
   });
 
-  it("asks the backend for the docName, not the raw token, while reporting the full token", async () => {
-    const requestedDocNames: string[] = [];
-    const client: DocLookup = {
-      async getDocument(docName) {
-        requestedDocNames.push(docName);
-        return { title: "Report", status: "ready" };
-      },
-    };
-    const text = "See report.pdf, p. 3 and report.pdf page 7.";
-    const r = await verifyCitations(text, client);
+  it("reports a missing document as unresolved with no suggestion when there is no near-miss hint", async () => {
+    const { client } = fakeClient({
+      documents: { "missing.pdf": { found: false, similar: [] } },
+    });
+    const r = await verifyCitations("See missing.pdf.", client);
+    expect(r.details).toEqual([
+      { token: "missing.pdf", status: "unresolved", title: null, suggestion: null },
+    ]);
+  });
 
-    // One lookup per distinct document, not per token: two page tokens of the same
-    // document must not cost two sequential backend round trips.
-    expect(requestedDocNames).toEqual(["report.pdf"]);
+  it("treats a getDocument throw as unchecked, never unresolved", async () => {
+    const { client } = fakeClient({ documents: { "down.pdf": "throw" } });
+    const r = await verifyCitations("See down.pdf.", client);
+    expect(r.details).toEqual([{ token: "down.pdf", status: "unchecked", title: null, suggestion: null }]);
+    expect(r.unresolved).toEqual([]);
+    expect(r.unchecked).toEqual(["down.pdf"]);
+  });
+
+  it("reports a bare node id with no document as unchecked, never touching the backend", async () => {
+    const { client, getDocumentCalls, getNodeIdsCalls } = fakeClient({});
+    const r = await verifyCitations("node_id: 0007", client);
+    expect(r.details).toHaveLength(1);
+    expect(r.details[0]?.status).toBe("unchecked");
+    expect(r.details[0]?.title).toBeNull();
+    expect(r.details[0]?.suggestion).toMatch(/document/i);
+    expect(r.details[0]?.suggestion).toMatch(/node/i);
+    expect(getDocumentCalls).toEqual([]);
+    expect(getNodeIdsCalls).toEqual([]);
+  });
+
+  it("resolves a citation whose page falls inside the real page count", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+    });
+    const r = await verifyCitations("See report.pdf p.3.", client);
+    expect(r.details).toEqual([
+      { token: "report.pdf#p3", status: "resolved", title: "report.pdf", suggestion: null },
+    ]);
+  });
+
+  it("reports a page beyond the real page count as unresolved with the real count in the suggestion", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+    });
+    const r = await verifyCitations("See report.pdf p.99.", client);
+    expect(r.details).toEqual([
+      {
+        token: "report.pdf#p99",
+        status: "unresolved",
+        title: null,
+        suggestion: "This document has 10 pages; the cited page is outside that range.",
+      },
+    ]);
+  });
+
+  it("reports a page range whose upper bound is outside the page count as unresolved", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+    });
+    const r = await verifyCitations("See report.pdf pp.8-12.", client);
+    expect(r.details).toEqual([
+      {
+        token: "report.pdf#p8-12",
+        status: "unresolved",
+        title: null,
+        suggestion: "This document has 10 pages; the cited page is outside that range.",
+      },
+    ]);
+  });
+
+  it("does not check a cited page when the document's page count is unknown, and says so", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: null } } },
+    });
+    const r = await verifyCitations("See report.pdf p.5.", client);
+    expect(r.details).toEqual([
+      {
+        token: "report.pdf#p5",
+        status: "resolved",
+        title: "report.pdf",
+        suggestion: "The document's page count is not available, so the cited page could not be verified.",
+      },
+    ]);
+  });
+
+  it("resolves a citation whose node id is present in the document's structure", async () => {
+    const { client, getNodeIdsCalls } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+      nodeIds: { "report.pdf": new Set(["0000", "0003"]) },
+    });
+    const r = await verifyCitations("See report.pdf node_id: 0003.", client);
+    expect(r.details).toEqual([
+      { token: "report.pdf#n0003", status: "resolved", title: "report.pdf", suggestion: null },
+    ]);
+    expect(getNodeIdsCalls).toEqual(["report.pdf"]);
+  });
+
+  it("reports a node id absent from the document's structure as unresolved", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+      nodeIds: { "report.pdf": new Set(["0000"]) },
+    });
+    const r = await verifyCitations("See report.pdf node_id: 0099.", client);
+    expect(r.details).toEqual([
+      {
+        token: "report.pdf#n0099",
+        status: "unresolved",
+        title: null,
+        suggestion: 'Node "0099" was not found in this document\'s structure.',
+      },
+    ]);
+  });
+
+  it("treats a getNodeIds throw as unchecked, even though the document was found", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+      nodeIds: { "report.pdf": "throw" },
+    });
+    const r = await verifyCitations("See report.pdf node_id: 0003.", client);
+    expect(r.details).toEqual([
+      { token: "report.pdf#n0003", status: "unchecked", title: null, suggestion: null },
+    ]);
+    expect(r.unresolved).toEqual([]);
+  });
+
+  it("reports which half failed when a citation carries both a page and a node and only the node fails", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+      nodeIds: { "report.pdf": new Set(["0000"]) },
+    });
+    const r = await verifyCitations("See report.pdf p.3, node_id: 0099.", client);
+    expect(r.details).toEqual([
+      {
+        token: "report.pdf#p3&n0099",
+        status: "unresolved",
+        title: null,
+        suggestion: 'Node "0099" was not found in this document\'s structure.',
+      },
+    ]);
+  });
+
+  it("reports which half failed when a citation carries both a page and a node and only the page fails", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+      nodeIds: { "report.pdf": new Set(["0003"]) },
+    });
+    const r = await verifyCitations("See report.pdf p.99, node_id: 0003.", client);
+    expect(r.details).toEqual([
+      {
+        token: "report.pdf#p99&n0003",
+        status: "unresolved",
+        title: null,
+        suggestion: "This document has 10 pages; the cited page is outside that range.",
+      },
+    ]);
+  });
+
+  it("looks up a document shared by two citations exactly once", async () => {
+    const { client, getDocumentCalls } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+    });
+    const r = await verifyCitations("See report.pdf p.3 and report.pdf p.7.", client);
+    expect(getDocumentCalls).toEqual(["report.pdf"]);
     expect(r.details.map((d) => d.token)).toEqual(["report.pdf#p3", "report.pdf#p7"]);
     expect(r.details.map((d) => d.status)).toEqual(["resolved", "resolved"]);
-    expect(r.details.map((d) => d.title)).toEqual(["Report", "Report"]);
-    expect(r.total).toBe(2);
+    expect(r.total).toBe(r.details.length);
   });
 
-  it("reuses a failed lookup for every token of the same document", async () => {
-    let calls = 0;
-    const client: DocLookup = {
-      async getDocument() {
-        calls += 1;
-        throw new Error("backend down");
-      },
-    };
-    const r = await verifyCitations("See report.pdf p.3 and report.pdf p.7.", client);
+  it("fetches a document's node ids exactly once for two citations naming different nodes", async () => {
+    const { client, getDocumentCalls, getNodeIdsCalls } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+      nodeIds: { "report.pdf": new Set(["0001", "0002"]) },
+    });
+    const r = await verifyCitations("report.pdf node_id: 0001. report.pdf node_id: 0002.", client);
+    expect(getDocumentCalls).toEqual(["report.pdf"]);
+    expect(getNodeIdsCalls).toEqual(["report.pdf"]);
+    expect(r.details.map((d) => d.status)).toEqual(["resolved", "resolved"]);
+    expect(r.total).toBe(r.details.length);
+  });
 
-    expect(calls).toBe(1);
-    expect(r.unchecked).toEqual(["report.pdf#p3", "report.pdf#p7"]);
+  it("makes every citation naming a document whose lookup threw unchecked, from a single call", async () => {
+    const { client, getDocumentCalls, getNodeIdsCalls } = fakeClient({
+      documents: { "down.pdf": "throw" },
+    });
+    const r = await verifyCitations("down.pdf p.3 and down.pdf node_id: 0001.", client);
+    expect(getDocumentCalls).toEqual(["down.pdf"]);
+    expect(getNodeIdsCalls).toEqual([]); // step 4 never reached once the document check fails
+    expect(r.details.map((d) => d.status)).toEqual(["unchecked", "unchecked"]);
     expect(r.unresolved).toEqual([]);
     expect(r.total).toBe(r.details.length);
   });
