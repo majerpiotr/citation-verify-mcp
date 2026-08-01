@@ -1,6 +1,6 @@
 // test/pageindex-client.test.ts
 import { describe, it, expect } from "vitest";
-import { interpretGetDocument, collectNodeIds } from "../src/pageindex-client.js";
+import { interpretGetDocument, collectNodeIds, shouldFetchNextStructurePart } from "../src/pageindex-client.js";
 
 // Builds a minimal CallToolResult-shaped envelope: a single text content block whose
 // text is the JSON-stringified body, matching what the SDK's Client.callTool() returns
@@ -153,5 +153,37 @@ describe("collectNodeIds", () => {
 
   it("throws when the structure itself is not an array", () => {
     expect(() => collectNodeIds({ not: "an array" })).toThrow();
+  });
+});
+
+// Probed live against a real 56-page single-part document: the backend OMITS
+// `pagination` entirely when the outline fits in one part - it is not
+// `{has_more:false}`, the key does not exist at all. Absence must mean "last part",
+// not "unreadable, throw" - otherwise node verification is dead on arrival for every
+// normal (single-part) document, since a missing pagination block would be treated as
+// ambiguous and every node check would come back `unchecked`.
+describe("shouldFetchNextStructurePart", () => {
+  it("stops when pagination is absent (undefined) - the observed single-part shape", () => {
+    expect(shouldFetchNextStructurePart(undefined)).toBe(false);
+  });
+
+  it("stops when pagination.has_more is explicitly false", () => {
+    expect(shouldFetchNextStructurePart({ has_more: false })).toBe(false);
+  });
+
+  it("continues only when pagination.has_more is literal true", () => {
+    expect(shouldFetchNextStructurePart({ has_more: true })).toBe(true);
+  });
+
+  it("stops when pagination is not an object", () => {
+    expect(shouldFetchNextStructurePart(null)).toBe(false);
+    expect(shouldFetchNextStructurePart("has_more")).toBe(false);
+    expect(shouldFetchNextStructurePart(42)).toBe(false);
+  });
+
+  it("stops when has_more is present but not literal true", () => {
+    expect(shouldFetchNextStructurePart({ has_more: "true" })).toBe(false);
+    expect(shouldFetchNextStructurePart({ has_more: 1 })).toBe(false);
+    expect(shouldFetchNextStructurePart({})).toBe(false);
   });
 });

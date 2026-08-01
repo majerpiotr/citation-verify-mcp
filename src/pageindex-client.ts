@@ -152,10 +152,25 @@ interface StructurePage {
   hasMore: boolean;
 }
 
-// Parses one page of get_document_structure. Requires a readable `pagination.has_more`
-// boolean - a page whose continuation status can't be read is ambiguous, and treating
-// it as "no more pages" could silently truncate the node set the same way exceeding
-// the part cap would, so this throws too rather than guessing.
+// PURE. Decides whether another get_document_structure page must be fetched.
+//
+// Observed live against a real single-part document: the backend OMITS `pagination`
+// entirely when the outline fits in one part - it is not `{has_more:false}`, the key
+// is simply absent. So absence means "that was the last part", not "unreadable".
+// Only an explicit `pagination.has_more === true` means "fetch another page"; a
+// missing pagination block, a non-object pagination, or any `has_more` that isn't
+// the literal `true` all mean stop and return what has been collected so far. This is
+// NOT a weakening of the truncation guard below: it only distinguishes "this response
+// legitimately has no more parts" from "a part was cut off mid-walk", and only the
+// latter is dangerous enough to throw over.
+export function shouldFetchNextStructurePart(pagination: unknown): boolean {
+  return isPlainObject(pagination) && pagination["has_more"] === true;
+}
+
+// Parses one page of get_document_structure. The `structure` array must be readable -
+// a page whose structure can't be read is genuinely ambiguous (see collectNodeIds),
+// but a missing or absent pagination block is not: it is the backend's normal way of
+// saying "no more parts" (see shouldFetchNextStructurePart above).
 function parseStructurePage(res: unknown, docName: string): StructurePage {
   const { text } = getResultEnvelope(res, "get_document_structure");
 
@@ -170,13 +185,7 @@ function parseStructurePage(res: unknown, docName: string): StructurePage {
       `get_document_structure for "${docName}" returned an unrecognized payload: ${excerpt(text)}`,
     );
   }
-  const pagination = parsed["pagination"];
-  if (!isPlainObject(pagination) || typeof pagination["has_more"] !== "boolean") {
-    throw new Error(
-      `get_document_structure for "${docName}" returned no readable pagination info: ${excerpt(text)}`,
-    );
-  }
-  return { structure: parsed["structure"], hasMore: pagination["has_more"] };
+  return { structure: parsed["structure"], hasMore: shouldFetchNextStructurePart(parsed["pagination"]) };
 }
 
 // Concrete client. Connects to the PageIndex HTTP MCP endpoint and dispatches
