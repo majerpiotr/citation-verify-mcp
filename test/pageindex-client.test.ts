@@ -1,6 +1,11 @@
 // test/pageindex-client.test.ts
 import { describe, it, expect } from "vitest";
-import { interpretGetDocument, collectNodeIds, shouldFetchNextStructurePart } from "../src/pageindex-client.js";
+import {
+  interpretGetDocument,
+  collectNodeIds,
+  shouldFetchNextStructurePart,
+  accumulateNodeIds,
+} from "../src/pageindex-client.js";
 
 // Builds a minimal CallToolResult-shaped envelope: a single text content block whose
 // text is the JSON-stringified body, matching what the SDK's Client.callTool() returns
@@ -41,6 +46,64 @@ describe("interpretGetDocument", () => {
       found: true,
       doc: { name: "some-doc.pdf", pageCount: null },
     });
+  });
+
+  // A resolver bounds-checks a cited page against 1..pageCount. `page_count: 0` (e.g.
+  // while a document's status is not yet "completed") would make every valid page
+  // citation fall outside that range and get reported `unresolved` - and deleted. Only
+  // a positive integer is a usable page count; anything else is `null`, which already
+  // means "not checked, the document verdict stands" - the document is still `found`.
+  it("reports pageCount null (not 0) when page_count is zero", () => {
+    const res = textResult({ success: true, name: "some-doc.pdf", page_count: 0 });
+    expect(interpretGetDocument(res)).toEqual({
+      found: true,
+      doc: { name: "some-doc.pdf", pageCount: null },
+    });
+  });
+
+  it("reports pageCount null when page_count is negative", () => {
+    const res = textResult({ success: true, name: "some-doc.pdf", page_count: -3 });
+    expect(interpretGetDocument(res)).toEqual({
+      found: true,
+      doc: { name: "some-doc.pdf", pageCount: null },
+    });
+  });
+
+  it("reports pageCount null when page_count is fractional", () => {
+    const res = textResult({ success: true, name: "some-doc.pdf", page_count: 5.5 });
+    expect(interpretGetDocument(res)).toEqual({
+      found: true,
+      doc: { name: "some-doc.pdf", pageCount: null },
+    });
+  });
+
+  // similar_files elements that aren't strings are not a usable "did you mean" list.
+  it("falls back to an empty similar list when similar_files contains non-strings", () => {
+    const res = textResult(
+      {
+        error: "Document not found.",
+        errorCode: "NOT_FOUND",
+        doc_name: "missing.pdf",
+        similar_files: ["ok.pdf", 5, null],
+      },
+      true,
+    );
+    expect(interpretGetDocument(res)).toEqual({ found: false, similar: [] });
+  });
+
+  // A body carrying both `success: true` and `isError: true` is not a positive,
+  // unambiguous statement that the document exists - it must not short-circuit past
+  // the isError channel.
+  it("throws when success is true but the envelope also reports isError", () => {
+    const res = textResult({ success: true, name: "some-doc.pdf", page_count: 56 }, true);
+    expect(() => interpretGetDocument(res)).toThrow();
+  });
+
+  // An empty name hands the resolver a title that isn't really a title. Ambiguous, not
+  // a usable positive statement about the document.
+  it("throws when success is true but name is an empty string", () => {
+    const res = textResult({ success: true, name: "", page_count: 56 });
+    expect(() => interpretGetDocument(res)).toThrow();
   });
 
   it("reports not found with the similar file list populated", () => {
@@ -154,6 +217,32 @@ describe("collectNodeIds", () => {
   it("throws when the structure itself is not an array", () => {
     expect(() => collectNodeIds({ not: "an array" })).toThrow();
   });
+
+  it("throws when a node's nodes field is present but not an array", () => {
+    const structure = [{ title: "Chapter", node_id: "0000", nodes: "not-an-array" }];
+    expect(() => collectNodeIds(structure)).toThrow();
+  });
+
+  // The direction (throw, not silently truncate) was already safe even without a
+  // guard - a cyclic or pathologically deep tree would blow the call stack, which is
+  // also a throw. But an unguarded RangeError isn't diagnosable. A shallow, cheap depth
+  // guard makes the failure name itself; no realistic outline nests anywhere near it.
+  it("throws a diagnosable error on a pathologically deep tree, not a raw stack overflow", () => {
+    let node: Record<string, unknown> = { title: "leaf", node_id: "id-999" };
+    for (let i = 998; i >= 0; i--) {
+      node = { title: `level-${i}`, node_id: `id-${i}`, nodes: [node] };
+    }
+    let message: string | null = null;
+    try {
+      collectNodeIds([node]);
+      throw new Error("expected collectNodeIds to throw");
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).not.toBeNull();
+    expect(message).not.toMatch(/Maximum call stack/i);
+    expect(message?.toLowerCase()).toMatch(/depth|deep|nest/);
+  });
 });
 
 // Probed live against a real 56-page single-part document: the backend OMITS
@@ -185,5 +274,123 @@ describe("shouldFetchNextStructurePart", () => {
     expect(shouldFetchNextStructurePart({ has_more: "true" })).toBe(false);
     expect(shouldFetchNextStructurePart({ has_more: 1 })).toBe(false);
     expect(shouldFetchNextStructurePart({})).toBe(false);
+  });
+});
+
+// Wraps a get_document_structure body the way the SDK's callTool() would.
+function structureResult(body: unknown, isError = false): unknown {
+  return { content: [{ type: "text", text: JSON.stringify(body) }], isError };
+}
+
+// The paging loop is exactly where under-collection would silently produce a false
+// `unresolved` (a real node id that IS in the document looking absent), so it must be
+// exercised directly - not just the has_more decision in isolation. Per the plan, the
+// HTTP transport itself stays untested; this injects only the "fetch one part" seam
+// (no mock MCP client), so `fetchPart` here stands in for one `callTool` round trip.
+describe("accumulateNodeIds", () => {
+  it("collects ids from a single part with no pagination block", async () => {
+    const fetchPart = async (part: number) => {
+      expect(part).toBe(1);
+      return structureResult({
+        success: true,
+        doc_name: "some-doc.pdf",
+        structure: [
+          { title: "Intro", node_id: "0000" },
+          { title: "Body", node_id: "0001" },
+        ],
+      });
+    };
+    const ids = await accumulateNodeIds("some-doc.pdf", fetchPart);
+    expect(ids).toEqual(new Set(["0000", "0001"]));
+  });
+
+  it("accumulates a union across two parts", async () => {
+    const calls: number[] = [];
+    const fetchPart = async (part: number) => {
+      calls.push(part);
+      if (part === 1) {
+        return structureResult({
+          success: true,
+          structure: [{ title: "A", node_id: "0000" }, { title: "B", node_id: "0001" }],
+          pagination: { has_more: true },
+        });
+      }
+      return structureResult({
+        success: true,
+        structure: [{ title: "C", node_id: "0002" }],
+        // Observed live: pagination is simply absent on the last part.
+      });
+    };
+    const ids = await accumulateNodeIds("some-doc.pdf", fetchPart);
+    expect(calls).toEqual([1, 2]);
+    expect(ids).toEqual(new Set(["0000", "0001", "0002"]));
+  });
+
+  it("collapses duplicate ids across parts", async () => {
+    const fetchPart = async (part: number) => {
+      if (part === 1) {
+        return structureResult({
+          success: true,
+          structure: [{ title: "A", node_id: "0000" }, { title: "B", node_id: "0001" }],
+          pagination: { has_more: true },
+        });
+      }
+      return structureResult({
+        success: true,
+        structure: [{ title: "B again", node_id: "0001" }, { title: "C", node_id: "0002" }],
+      });
+    };
+    const ids = await accumulateNodeIds("some-doc.pdf", fetchPart);
+    expect(ids).toEqual(new Set(["0000", "0001", "0002"]));
+    expect(ids.size).toBe(3);
+  });
+
+  // Fix 1: an empty first part is ambiguous, not a positive statement that the
+  // document has no nodes - a document with genuinely zero nodes cannot have a validly
+  // cited node anyway, so `unchecked` (via a throw) is both safe and honest.
+  it("throws when the first part yields no node ids at all", async () => {
+    const fetchPart = async () => structureResult({ success: true, structure: [] });
+    await expect(accumulateNodeIds("some-doc.pdf", fetchPart)).rejects.toThrow();
+  });
+
+  // A later part adding nothing new is fine - only an EMPTY FIRST part is suspicious.
+  it("does not throw when a later part adds no new ids", async () => {
+    const fetchPart = async (part: number) => {
+      if (part === 1) {
+        return structureResult({
+          success: true,
+          structure: [{ title: "A", node_id: "0000" }],
+          pagination: { has_more: true },
+        });
+      }
+      return structureResult({ success: true, structure: [] });
+    };
+    const ids = await accumulateNodeIds("some-doc.pdf", fetchPart);
+    expect(ids).toEqual(new Set(["0000"]));
+  });
+
+  // Without a cap, a backend that always reports has_more:true would loop forever.
+  // Exceeding it must THROW, never return the partial set collected so far - a partial
+  // set would make a real node id look absent and produce a false `unresolved`.
+  it("throws when the pagination cap is exceeded, without returning a partial set", async () => {
+    let calls = 0;
+    const fetchPart = async (part: number) => {
+      calls += 1;
+      return structureResult({
+        success: true,
+        structure: [{ title: `Node ${part}`, node_id: `id-${part}` }],
+        pagination: { has_more: true },
+      });
+    };
+    await expect(accumulateNodeIds("some-doc.pdf", fetchPart)).rejects.toThrow();
+    // The cap was actually hit, not some unrelated early failure.
+    expect(calls).toBeGreaterThan(1);
+  });
+
+  // parseStructurePage must not read a `structure` key out of an errored response.
+  it("throws when a part reports isError, even if the body has a structure key", async () => {
+    const fetchPart = async () =>
+      structureResult({ error: "PageIndex API returned 503", structure: [] }, true);
+    await expect(accumulateNodeIds("some-doc.pdf", fetchPart)).rejects.toThrow();
   });
 });

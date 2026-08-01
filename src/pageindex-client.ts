@@ -101,13 +101,23 @@ export function interpretGetDocument(res: unknown): DocLookupResult {
     throw new Error(`get_document returned a JSON payload that is not an object: ${excerpt(text)}`);
   }
 
-  if (parsed["success"] === true) {
+  // `success: true` only counts alongside an absent/false isError - a body carrying
+  // both is not an unambiguous positive statement that the document exists.
+  if (parsed["success"] === true && !isError) {
     const name = parsed["name"];
-    if (typeof name !== "string") {
-      throw new Error(`get_document reported success without a document name: ${excerpt(text)}`);
+    if (typeof name !== "string" || name.length === 0) {
+      throw new Error(`get_document reported success without a usable document name: ${excerpt(text)}`);
     }
+    // Only a positive integer is a usable page count. A resolver bounds-checks a cited
+    // page against 1..pageCount, so `page_count: 0` (e.g. while status isn't yet
+    // "completed"), a negative, or a fractional value would make every valid page
+    // citation fall outside that range and get deleted. `null` already means "not
+    // checked, the document verdict stands" - the document is still `found`.
     const pageCountRaw = parsed["page_count"];
-    const pageCount = typeof pageCountRaw === "number" ? pageCountRaw : null;
+    const pageCount =
+      typeof pageCountRaw === "number" && Number.isInteger(pageCountRaw) && pageCountRaw > 0
+        ? pageCountRaw
+        : null;
     return { found: true, doc: { name, pageCount } };
   }
 
@@ -121,17 +131,30 @@ export function interpretGetDocument(res: unknown): DocLookupResult {
   throw new Error(`get_document returned an unrecognized response: ${excerpt(text)}`);
 }
 
+// Generous cap on recursion depth while walking a structure tree. No realistic
+// document outline nests anywhere near this deep; it exists purely so a cyclic or
+// pathologically deep tree fails with a diagnosable message instead of a raw
+// `RangeError: Maximum call stack size exceeded`. The direction (throw, not silently
+// truncate) was already safe without this guard - this only makes the failure
+// nameable.
+const MAX_STRUCTURE_DEPTH = 64;
+
 // PURE. Walks a get_document_structure `structure` array recursively through `nodes`
 // children and collects every `node_id`. Throws on a shape it cannot read rather than
 // silently returning fewer ids - identical reasoning to the pagination cap: a partial
 // set would make a real node look absent and produce a false `unresolved`.
 export function collectNodeIds(structure: unknown): Set<string> {
   const ids = new Set<string>();
-  walkNodes(structure, ids);
+  walkNodes(structure, ids, 0);
   return ids;
 }
 
-function walkNodes(entries: unknown, ids: Set<string>): void {
+function walkNodes(entries: unknown, ids: Set<string>, depth: number): void {
+  if (depth > MAX_STRUCTURE_DEPTH) {
+    throw new Error(
+      `document structure nesting exceeded ${MAX_STRUCTURE_DEPTH} levels - likely a cyclic or pathologically deep tree`,
+    );
+  }
   if (!Array.isArray(entries)) {
     throw new Error(`document structure is not an array: ${excerptOf(entries)}`);
   }
@@ -142,7 +165,7 @@ function walkNodes(entries: unknown, ids: Set<string>): void {
     ids.add(entry["node_id"]);
     const children = entry["nodes"];
     if (children !== undefined) {
-      walkNodes(children, ids);
+      walkNodes(children, ids, depth + 1);
     }
   }
 }
@@ -170,9 +193,14 @@ export function shouldFetchNextStructurePart(pagination: unknown): boolean {
 // Parses one page of get_document_structure. The `structure` array must be readable -
 // a page whose structure can't be read is genuinely ambiguous (see collectNodeIds),
 // but a missing or absent pagination block is not: it is the backend's normal way of
-// saying "no more parts" (see shouldFetchNextStructurePart above).
+// saying "no more parts" (see shouldFetchNextStructurePart above). An errored page must
+// not have a `structure` key read out of it even if the body happens to carry one -
+// the isError channel is not a positive statement about the document's structure.
 function parseStructurePage(res: unknown, docName: string): StructurePage {
-  const { text } = getResultEnvelope(res, "get_document_structure");
+  const { isError, text } = getResultEnvelope(res, "get_document_structure");
+  if (isError) {
+    throw new Error(`get_document_structure for "${docName}" reported an error: ${excerpt(text)}`);
+  }
 
   let parsed: unknown;
   try {
@@ -186,6 +214,49 @@ function parseStructurePage(res: unknown, docName: string): StructurePage {
     );
   }
   return { structure: parsed["structure"], hasMore: shouldFetchNextStructurePart(parsed["pagination"]) };
+}
+
+// PURE-ish: the paging/accumulation logic, with the network call injected as
+// `fetchPart`. This is exactly where under-collection would silently produce a false
+// `unresolved` (a real node id that IS in the document looking absent), so it is
+// exercised directly rather than only through the has_more decision in isolation. The
+// HTTP transport stays untested per the plan; only the "fetch one part" seam is
+// injected here - `getNodeIds` below supplies the real one.
+//
+// Observed live: `part` is 1-based - `part: 0` is rejected with a validation error
+// (`too_small, minimum: 1`) - so the loop starts at 1 and must keep doing so. An
+// out-of-range `part` (e.g. past the last real part) was observed to return the FULL
+// structure again, not an empty one, so over-paging duplicates rather than truncates;
+// the `Set` absorbs that harmlessly.
+export async function accumulateNodeIds(
+  docName: string,
+  fetchPart: (part: number) => Promise<unknown>,
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (let part = 1; part <= MAX_STRUCTURE_PARTS; part++) {
+    const res = await fetchPart(part);
+    const page = parseStructurePage(res, docName);
+    const pageIds = collectNodeIds(page.structure);
+
+    // Fix: an empty FIRST part is ambiguous, not a positive statement that the
+    // document has no nodes - a document with genuinely zero nodes cannot have a
+    // validly cited node anyway, so `unchecked` (via a throw) is both the safe and
+    // the honest verdict. A later part adding nothing is fine and must not throw.
+    if (part === 1 && pageIds.size === 0) {
+      throw new Error(
+        `get_document_structure for "${docName}" returned no node ids on its first part, ` +
+          "which is ambiguous rather than a positive statement that the document has no nodes",
+      );
+    }
+
+    for (const id of pageIds) {
+      ids.add(id);
+    }
+    if (!page.hasMore) return ids;
+  }
+  throw new Error(
+    `get_document_structure for "${docName}" exceeded the ${MAX_STRUCTURE_PARTS}-part pagination cap`,
+  );
 }
 
 // Concrete client. Connects to the PageIndex HTTP MCP endpoint and dispatches
@@ -217,20 +288,13 @@ export class PageindexHttpClient implements DocLookup {
   }
 
   async getNodeIds(docName: string): Promise<Set<string>> {
-    const ids = new Set<string>();
-    for (let part = 1; part <= MAX_STRUCTURE_PARTS; part++) {
-      const res = await this.client.callTool({
+    return accumulateNodeIds(docName, (part) =>
+      this.client.callTool({
         name: "get_document_structure",
+        // `doc_name`, matching get_document - see the NOTE above. `part` is 1-based
+        // (docs/spike-b-findings.md section 5).
         arguments: { doc_name: docName, part },
-      });
-      const page = parseStructurePage(res, docName);
-      for (const id of collectNodeIds(page.structure)) {
-        ids.add(id);
-      }
-      if (!page.hasMore) return ids;
-    }
-    throw new Error(
-      `get_document_structure for "${docName}" exceeded the ${MAX_STRUCTURE_PARTS}-part pagination cap`,
+      }),
     );
   }
 }
