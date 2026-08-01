@@ -6,6 +6,7 @@ import {
   shouldFetchNextStructurePart,
   accumulateNodeIds,
   assertSecureBaseUrl,
+  PageindexHttpClient,
 } from "../src/pageindex-client.js";
 
 // Builds a minimal CallToolResult-shaped envelope: a single text content block whose
@@ -419,5 +420,77 @@ describe("assertSecureBaseUrl", () => {
 
   it("rejects a non-http(s) scheme", () => {
     expect(() => assertSecureBaseUrl(new URL("ftp://api.pageindex.ai/mcp"))).toThrow(/https/);
+  });
+});
+
+// Pins the wire contract itself: the exact tool name and argument key
+// PageindexHttpClient sends. Established empirically against the live backend
+// (docs/spike-b-findings.md section 4) and NOT covered by interpretGetDocument /
+// accumulateNodeIds above, which only test how a response is read - not what request
+// produced it. `doc_name` (not `doc_id`) and a 1-based `part` are both load-bearing:
+// get either wrong and the backend returns a validation error on every call, which
+// interpretGetDocument turns into a throw, so every citation becomes `unchecked`
+// forever (CLAUDE.md hard rule 4) while the rest of this suite stays green. Uses
+// PageindexHttpClient.forTesting to inject a fake ToolCaller that records every
+// {name, arguments} pair - no network, no API key, no real MCP transport.
+describe("PageindexHttpClient wire contract", () => {
+  it("calls get_document with tool name get_document and argument key doc_name", async () => {
+    const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+    const client = PageindexHttpClient.forTesting({
+      async callTool(params) {
+        calls.push(params);
+        return textResult({ success: true, name: "report.pdf", page_count: 12 });
+      },
+    });
+
+    const result = await client.getDocument("report.pdf");
+
+    expect(calls).toEqual([{ name: "get_document", arguments: { doc_name: "report.pdf" } }]);
+    expect(result).toEqual({ found: true, doc: { name: "report.pdf", pageCount: 12 } });
+  });
+
+  it("calls get_document_structure with argument key doc_name and a 1-based part", async () => {
+    const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+    const client = PageindexHttpClient.forTesting({
+      async callTool(params) {
+        calls.push(params);
+        return structureResult({
+          success: true,
+          structure: [{ title: "Intro", node_id: "0000" }],
+          // No pagination block: the observed single-part shape, so exactly one call.
+        });
+      },
+    });
+
+    const ids = await client.getNodeIds("report.pdf");
+
+    expect(calls).toEqual([
+      { name: "get_document_structure", arguments: { doc_name: "report.pdf", part: 1 } },
+    ]);
+    expect(ids).toEqual(new Set(["0000"]));
+  });
+
+  it("pages get_document_structure with an increasing 1-based part, never part: 0", async () => {
+    const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+    const client = PageindexHttpClient.forTesting({
+      async callTool(params) {
+        calls.push(params);
+        if (params.arguments["part"] === 1) {
+          return structureResult({
+            success: true,
+            structure: [{ title: "A", node_id: "0000" }],
+            pagination: { has_more: true },
+          });
+        }
+        return structureResult({ success: true, structure: [{ title: "B", node_id: "0001" }] });
+      },
+    });
+
+    await client.getNodeIds("report.pdf");
+
+    expect(calls).toEqual([
+      { name: "get_document_structure", arguments: { doc_name: "report.pdf", part: 1 } },
+      { name: "get_document_structure", arguments: { doc_name: "report.pdf", part: 2 } },
+    ]);
   });
 });

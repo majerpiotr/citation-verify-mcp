@@ -275,11 +275,21 @@ export function assertSecureBaseUrl(url: URL): void {
   );
 }
 
+// The minimal surface of the SDK's `Client` this module actually calls. Narrowing the
+// field to this shape instead of the concrete `Client` class is the seam: any object
+// with a matching `callTool` satisfies it, so a unit test can inject a fake that
+// records every {name, arguments} pair without a real MCP transport. A real `Client`
+// satisfies this structurally as-is, so nothing about `connect()`'s runtime behaviour
+// changes.
+export interface ToolCaller {
+  callTool(params: { name: string; arguments: Record<string, unknown> }): Promise<unknown>;
+}
+
 // Concrete client. Connects to the PageIndex HTTP MCP endpoint and dispatches
 // get_document / get_document_structure. Network glue - exercised by
 // test/integration.test.ts, not the unit suite (docs/spike-b-findings.md section 1).
 export class PageindexHttpClient implements DocLookup {
-  private constructor(private readonly client: Client) {}
+  private constructor(private readonly client: ToolCaller) {}
 
   static async connect(apiKey: string): Promise<PageindexHttpClient> {
     // Overridable for a self-hosted backend (docs/design.md section 6).
@@ -292,6 +302,17 @@ export class PageindexHttpClient implements DocLookup {
     const client = new Client({ name: "citation-verify", version: "0.0.1" });
     await client.connect(transport);
     return new PageindexHttpClient(client);
+  }
+
+  // Test-only construction path: builds an instance around an injected ToolCaller
+  // instead of a real MCP Client/transport, so test/pageindex-client.test.ts can pin the
+  // exact wire payloads getDocument/getNodeIds send - tool name and argument key - with
+  // no network and no API key. See CLAUDE.md hard rule 4 for why that payload matters:
+  // a wrong argument key makes the backend return isError for every call, which
+  // interpretGetDocument turns into a thrown error, so every citation becomes
+  // `unchecked` forever while the rest of the unit suite stays green.
+  static forTesting(caller: ToolCaller): PageindexHttpClient {
+    return new PageindexHttpClient(caller);
   }
 
   async getDocument(docName: string): Promise<DocLookupResult> {
