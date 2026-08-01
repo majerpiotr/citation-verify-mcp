@@ -142,6 +142,25 @@ describe("verifyCitations", () => {
     ]);
   });
 
+  it("bounds BOTH ends of a descending page range, not just the second number written", async () => {
+    // "pp.99-3" parses to {from: 99, to: 3} - the grammar puts no ordering constraint on
+    // the two numbers. A check that only compares `to` against pageCount lets a fabricated
+    // upper endpoint slip through as a clean `resolved`, which is worse than `unchecked`:
+    // resolved is the one status that claims full verification.
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+    });
+    const r = await verifyCitations("See report.pdf pp.99-3.", client);
+    expect(r.details).toEqual([
+      {
+        token: "report.pdf#p99-3",
+        status: "unresolved",
+        title: null,
+        suggestion: "This document has 10 pages; the cited page is outside that range.",
+      },
+    ]);
+  });
+
   it("does not check a cited page when the document's page count is unknown, and says so", async () => {
     const { client } = fakeClient({
       documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: null } } },
@@ -185,14 +204,19 @@ describe("verifyCitations", () => {
     ]);
   });
 
-  it("treats a getNodeIds throw as unchecked, even though the document was found", async () => {
+  it("treats a getNodeIds throw as unchecked, even though the document was found, and says the node was never verified", async () => {
     const { client } = fakeClient({
       documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
       nodeIds: { "report.pdf": "throw" },
     });
     const r = await verifyCitations("See report.pdf node_id: 0003.", client);
     expect(r.details).toEqual([
-      { token: "report.pdf#n0003", status: "unchecked", title: null, suggestion: null },
+      {
+        token: "report.pdf#n0003",
+        status: "unchecked",
+        title: null,
+        suggestion: "The cited node could not be verified because the document's structure could not be checked.",
+      },
     ]);
     expect(r.unresolved).toEqual([]);
   });
@@ -262,5 +286,82 @@ describe("verifyCitations", () => {
     expect(r.details.map((d) => d.status)).toEqual(["unchecked", "unchecked"]);
     expect(r.unresolved).toEqual([]);
     expect(r.total).toBe(r.details.length);
+  });
+
+  it("never calls getNodeIds when the document itself was not found", async () => {
+    const { client, getNodeIdsCalls } = fakeClient({
+      documents: { "missing.pdf": { found: false, similar: [] } },
+    });
+    const r = await verifyCitations("See missing.pdf node_id: 0001.", client);
+    expect(getNodeIdsCalls).toEqual([]);
+    expect(r.details.map((d) => d.status)).toEqual(["unresolved"]);
+  });
+
+  it("combines the page-unverified note with a node-absent failure when the page count is unknown", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: null } } },
+      nodeIds: { "report.pdf": new Set(["0000"]) },
+    });
+    const r = await verifyCitations("See report.pdf p.5, node_id: 0099.", client);
+    expect(r.details).toEqual([
+      {
+        token: "report.pdf#p5&n0099",
+        status: "unresolved",
+        title: null,
+        suggestion:
+          "The document's page count is not available, so the cited page could not be verified. " +
+          'Node "0099" was not found in this document\'s structure.',
+      },
+    ]);
+  });
+
+  it("combines the page-unverified note with a node-unchecked note when the page count is unknown and getNodeIds throws", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: null } } },
+      nodeIds: { "report.pdf": "throw" },
+    });
+    const r = await verifyCitations("See report.pdf p.5, node_id: 0003.", client);
+    expect(r.details).toEqual([
+      {
+        token: "report.pdf#p5&n0003",
+        status: "unchecked",
+        title: null,
+        suggestion:
+          "The document's page count is not available, so the cited page could not be verified. " +
+          "The cited node could not be verified because the document's structure could not be checked.",
+      },
+    ]);
+  });
+
+  it("stays unresolved - never unchecked - when the page positively fails and the node lookup separately throws", async () => {
+    // Adjudicated: the page miss is established against a real pageCount, so the citation
+    // is demonstrably false regardless of what the node lookup would have said. Falling
+    // back to `unchecked` here would let a degraded outline service launder a fabricated
+    // page number into "keep this". The suggestion must still disclose that the node half
+    // was never verified, since `unresolved` deletes the whole citation.
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+      nodeIds: { "report.pdf": "throw" },
+    });
+    const r = await verifyCitations("See report.pdf p.99, node_id: 0003.", client);
+    expect(r.details).toEqual([
+      {
+        token: "report.pdf#p99&n0003",
+        status: "unresolved",
+        title: null,
+        suggestion:
+          "This document has 10 pages; the cited page is outside that range. " +
+          "The cited node could not be verified because the document's structure could not be checked.",
+      },
+    ]);
+  });
+
+  it("never caches a document lookup across separate verifyCitations calls", async () => {
+    const { client, getDocumentCalls } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+    });
+    await verifyCitations("See report.pdf.", client);
+    await verifyCitations("See report.pdf.", client);
+    expect(getDocumentCalls).toEqual(["report.pdf", "report.pdf"]);
   });
 });

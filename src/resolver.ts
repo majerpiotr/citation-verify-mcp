@@ -38,6 +38,9 @@ const BARE_NODE_SUGGESTION =
 const PAGE_COUNT_UNKNOWN_SUGGESTION =
   "The document's page count is not available, so the cited page could not be verified.";
 
+const NODE_UNCHECKED_SUGGESTION =
+  "The cited node could not be verified because the document's structure could not be checked.";
+
 function pageOutOfRangeSuggestion(pageCount: number): string {
   return `This document has ${pageCount} page${pageCount === 1 ? "" : "s"}; the cited page is outside that range.`;
 }
@@ -54,11 +57,6 @@ type DocOutcome =
   | { kind: "found"; doc: DocumentInfo }
   | { kind: "not-found"; suggestion: string | null }
   | { kind: "unchecked" };
-
-// Result of the (optional) node-membership check, independent of the (optional) page-range
-// check - a citation can carry both, and the two are evaluated independently so the
-// suggestion can name exactly which half failed.
-type NodeCheck = "not-cited" | "unchecked" | "present" | "absent";
 
 export async function verifyCitations(text: string, client: DocLookup): Promise<VerifyResult> {
   const citations = extractCitations(text);
@@ -112,51 +110,74 @@ async function classify(
   }
   const { doc } = docOutcome;
 
+  // Every note accumulated below - failure messages AND "this half was not verified"
+  // notes alike - is carried into the final suggestion regardless of which status it ends
+  // up producing. `unresolved` deletes the whole citation, so its suggestion is the only
+  // channel left to say "and the other half was never checked either"; dropping a note
+  // just because the OTHER half is what decided the status would silently misinform the
+  // consuming agent about what was actually verified.
+  const notes: string[] = [];
+
   // Step 3: page bounds, only checked when the real page count is known. An unknown page
-  // count does not fail the citation - the document verdict stands - but the suggestion must
-  // say the page itself was not verified, so a consuming agent is not misled.
+  // count does not fail the citation on its own - the document/node verdict stands - but a
+  // note is still recorded so a consuming agent is never misled into thinking the page was
+  // verified. Both endpoints of the cited range are bounds-checked, not just the second
+  // number written: the grammar puts no ordering constraint on "pp.<N>-<M>", so a
+  // descending range (e.g. "pp.99-3") is real input, and comparing only the second number
+  // would let a fabricated page slip through as a clean `resolved`.
   let pageFailed = false;
-  let pageMessage: string | null = null;
   if (pages) {
     if (doc.pageCount === null) {
-      pageMessage = PAGE_COUNT_UNKNOWN_SUGGESTION;
-    } else if (pages.from < 1 || pages.to > doc.pageCount) {
-      pageFailed = true;
-      pageMessage = pageOutOfRangeSuggestion(doc.pageCount);
+      notes.push(PAGE_COUNT_UNKNOWN_SUGGESTION);
+    } else {
+      const lo = Math.min(pages.from, pages.to);
+      const hi = Math.max(pages.from, pages.to);
+      if (lo < 1 || hi > doc.pageCount) {
+        pageFailed = true;
+        notes.push(pageOutOfRangeSuggestion(doc.pageCount));
+      }
     }
   }
 
   // Step 4: node membership, only checked when a node was actually cited - never
   // speculatively. This always runs when nodeId is set, independent of the page result
-  // above, so a combined page+node citation can report which half failed.
-  let nodeCheck: NodeCheck = "not-cited";
+  // above, so a combined page+node citation can report which half failed (or that both
+  // did, or that one failed while the other could not even be checked).
+  let nodeFailed = false;
+  let nodeUnchecked = false;
   if (nodeId !== null) {
     const ids = await getNodeIdSet(docName, client, nodeIdSets);
-    nodeCheck = ids === null ? "unchecked" : ids.has(nodeId) ? "present" : "absent";
+    if (ids === null) {
+      nodeUnchecked = true;
+      notes.push(NODE_UNCHECKED_SUGGESTION);
+    } else if (!ids.has(nodeId)) {
+      nodeFailed = true;
+      notes.push(nodeAbsentSuggestion(nodeId));
+    }
   }
-  const nodeFailed = nodeCheck === "absent";
 
-  // A positively-confirmed miss on either half makes the whole citation `unresolved`. Both
-  // halves are evaluated above (not short-circuited) specifically so the suggestion can name
-  // which one failed - required when only one of the two fails, and combined when both do.
+  const suggestion = notes.length > 0 ? notes.join(" ") : null;
+
+  // A positively-confirmed miss on either half makes the whole citation `unresolved`, even
+  // when the OTHER half could not be checked at all (e.g. the page is provably out of
+  // range while the node lookup separately throws): the miss was established against real
+  // data and stays true regardless of what the other half would have said. Falling back to
+  // `unchecked` there would let a degraded outline service launder a fabricated page number
+  // into "keep this" - adjudicated, see the R3 review.
   if (pageFailed || nodeFailed) {
-    const parts = [
-      pageFailed ? pageMessage : null,
-      nodeFailed ? nodeAbsentSuggestion(nodeId as string) : null,
-    ].filter((m): m is string => m !== null);
-    return { token, status: "unresolved", title: null, suggestion: parts.join(" ") };
+    return { token, status: "unresolved", title: null, suggestion };
   }
 
   // Neither half positively failed, but the node check could not run - `unchecked`, per the
   // same reasoning as step 2: an incomplete check must never present as a clean pass.
-  if (nodeCheck === "unchecked") {
-    return { token, status: "unchecked", title: null, suggestion: null };
+  if (nodeUnchecked) {
+    return { token, status: "unchecked", title: null, suggestion };
   }
 
-  // Step 5: resolved. `pageMessage` here (if set) is only the "page count unknown, not
+  // Step 5: resolved. `suggestion` here (if set) is only the "page count unknown, not
   // checked" note - carried through so a resolved verdict does not imply the page itself was
   // verified.
-  return { token, status: "resolved", title: doc.name, suggestion: pageMessage };
+  return { token, status: "resolved", title: doc.name, suggestion };
 }
 
 async function getDocOutcome(
