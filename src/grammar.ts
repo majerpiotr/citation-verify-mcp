@@ -52,18 +52,66 @@ const PDF_EXT = ci("pdf");
 // be disclosed to the consuming agent in the tool description (a later task).
 const DOC_NAME_PATTERN = String.raw`[A-Za-z0-9_.\-]*[A-Za-z0-9_\-]\.${PDF_EXT}`;
 
-// A document name wrapped in double quotes, single quotes, or backticks is taken verbatim,
-// spaces included, and the delimiters are not part of the name. This is the supported way
-// to cite a document whose real file name contains a space - see the limitation above.
-const QUOTE_DELIMITERS = ['"', "'", "`"];
+// A document name wrapped in double quotes or backticks is taken verbatim, spaces
+// included, and the delimiters are not part of the name. This is the supported way to
+// cite a document whose real file name contains a space - see the limitation above.
+//
+// Single quote deliberately dropped as a delimiter (re-review ruling): English prose uses
+// apostrophes constantly ("don't", "report.pdf's", "the team's"), and a real file name
+// wrapped in single quotes in agent output is vanishingly rare. Treating `'` as a
+// delimiter turned an ordinary possessive or contraction into an invented document name.
+const QUOTE_DELIMITERS = ['"', "`"];
 
+// The raw structural match: any content up to the (fixed) closing delimiter, ending in a
+// real name character before the extension. This alone is NOT sufficient to accept the
+// span as a document name - see isFileNameShaped below, which is what actually decides
+// whether a match is a citation or ordinary prose that happens to contain ".pdf".
 function quotedNameFragment(delim: string): string {
-  // Content: anything except the delimiter itself (spaces included), still required to end
-  // in a real name character before the extension - same rule as the bare pattern.
   return `${delim}([^${delim}]*[A-Za-z0-9_\\-]\\.${PDF_EXT})${delim}`;
 }
 
+// One capturing group (the name) per delimiter alternative.
+const QUOTED_DOC_GROUP_STRIDE = 1;
 const RE_QUOTED_DOC = new RegExp(QUOTE_DELIMITERS.map(quotedNameFragment).join("|"), "g");
+
+// Re-review ruling: a structurally-matched quote is only ACCEPTED as a document name when
+// it is genuinely file-name-shaped, not merely because it ends in ".pdf" somewhere inside
+// a delimiter pair - an ordinary quotation ("the data comes from report.pdf") or a
+// markdown/code span can easily satisfy the structural pattern above without being a file
+// name. All four conditions must hold:
+//   - matches ^[A-Za-z0-9][A-Za-z0-9 ._-]*\.pdf$ (extension case-insensitive), i.e. starts
+//     with a real character, contains only name-shaped characters and spaces, and has no
+//     leading/trailing whitespace inside the delimiters (enforced by the anchors)
+//   - at most MAX_DELIMITED_NAME_WORDS space-separated words
+//   - at most MAX_DELIMITED_NAME_CHARS characters
+// A REJECTED span is treated as if it were never quoted at all: it must not be added to
+// quotedSpans, so the bare match inside it (e.g. plain "report.pdf") still surfaces. This
+// is the important half of the fix - suppression is what turned an over-match into a
+// deleted valid citation in the probe that prompted this round.
+const MAX_DELIMITED_NAME_CHARS = 80;
+const MAX_DELIMITED_NAME_WORDS = 4;
+const RE_FILE_NAME_SHAPE = new RegExp(`^[A-Za-z0-9][A-Za-z0-9 ._-]*\\.${PDF_EXT}$`);
+
+function isFileNameShaped(content: string): boolean {
+  if (content.length === 0 || content.length > MAX_DELIMITED_NAME_CHARS) return false;
+  if (!RE_FILE_NAME_SHAPE.test(content)) return false;
+  const words = content.split(" ").filter((w) => w.length > 0);
+  return words.length <= MAX_DELIMITED_NAME_WORDS;
+}
+
+// Reads the first defined capturing group across a set of mutually-exclusive alternation
+// branches that each contribute the same number of groups (`stride`), at the same relative
+// `offset` within their branch - e.g. offset 1 is always "the name" whichever delimiter
+// matched. Used for BOTH RE_QUOTED_DOC (stride 1) and RE_QUOTED_DOC_PAGE (stride 3) so
+// adding or removing a delimiter only ever changes QUOTE_DELIMITERS - neither call site
+// hard-codes how many delimiters exist.
+function delimiterGroup(m: RegExpMatchArray, stride: number, offset: number): string | undefined {
+  for (let i = 0; i < QUOTE_DELIMITERS.length; i++) {
+    const value = m[i * stride + offset];
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
 
 const PAGE_KEYWORD = `(?:${ci("pp.")}|${ci("pages")}|${ci("page")}|${ci("p.")})`;
 const NODE_ID_KEYWORD = ci("node_id");
@@ -134,11 +182,18 @@ const RE_NODE_ID = new RegExp(String.raw`${NODE_ID_KEYWORD}[:=]\s*([A-Za-z0-9_\-
 // wrong name -> `unresolved` -> a consuming agent deletes a citation that was actually
 // fine. So this deliberately over-detects (no capital-letter requirement on the next
 // sentence - a lowercase or digit-initial sentence still counts) rather than under-detect.
+//
 // The one narrow carve-out is the page abbreviation "p." / "pp." immediately before a page
-// citation ("report.pdf p. 5, node_id: 0003" must stay one sentence) - implemented as a
-// lookbehind rather than a lookahead, so it only ever suppresses a boundary, never invents
-// one; it never risks under-detecting anywhere else.
-const RE_SENTENCE_BOUNDARY = /(?<!\b[Pp])(?<!\b[Pp][Pp])[.!?]+(?:\s+|\s*$)|\n+/g;
+// NUMBER ("report.pdf p. 5, node_id: 0003" must stay one sentence). It is conditioned on a
+// digit actually following - `p.`/`pp.` NOT followed by a digit (e.g. "report.pdf, p. Then
+// node_id: 0003.") is a real sentence end and must still split. Two branches, so the
+// carve-out can only ever suppress a boundary in the one case it targets, never invent one
+// elsewhere:
+//   1. `\b[Pp][Pp]?\.` NOT followed by a digit -> IS a boundary in its own right (closes
+//      the gap: a sentence that happens to end in "p."/"pp." with no page number after it).
+//   2. any other `.!?` run not immediately preceded by "p"/"pp" -> the general case.
+const RE_SENTENCE_BOUNDARY =
+  /\b[Pp][Pp]?\.(?![ \t]*\d)(?:\s+|\s*$)|(?<!\b[Pp])(?<!\b[Pp][Pp])[.!?]+(?:\s+|\s*$)|\n+/g;
 
 // Trailing sentence/bracket punctuation that can follow a node id without being part of
 // it, e.g. "(node_id: 0003)" or "node_id: abc-123.".
@@ -239,18 +294,20 @@ export function extractCitations(text: string): Citation[] {
     nodeMentions.push({ start, id });
   }
 
-  // Quoted document mentions - preferred over a bare match covering the same span
-  // (Critical 3). Computed before bare mentions so their spans can be excluded from them.
+  // Quoted document mentions - preferred over a bare match covering the same span, but
+  // ONLY when the delimited content is genuinely file-name-shaped (isFileNameShaped).
+  // Computed before bare mentions so an ACCEPTED span can be excluded from them; a
+  // REJECTED span contributes nothing here - not a docMention, not a reserved span - so
+  // the bare match inside it (e.g. plain "report.pdf" inside an ordinary quotation) is
+  // left completely free to be found in the bare pass below.
   const quotedPageByStart = new Map<number, { from: number; to: number }>();
   for (const m of text.matchAll(RE_QUOTED_DOC_PAGE)) {
     const start = m.index ?? 0;
-    for (let i = 0; i < QUOTE_DELIMITERS.length; i++) {
-      const from = m[i * QUOTED_PAGE_GROUP_STRIDE + 2];
-      if (from === undefined) continue;
-      const to = m[i * QUOTED_PAGE_GROUP_STRIDE + 3];
-      quotedPageByStart.set(start, { from: Number(from), to: to !== undefined ? Number(to) : Number(from) });
-      break;
-    }
+    const name = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 1);
+    const from = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 2);
+    if (name === undefined || from === undefined || !isFileNameShaped(name)) continue;
+    const to = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 3);
+    quotedPageByStart.set(start, { from: Number(from), to: to !== undefined ? Number(to) : Number(from) });
   }
 
   const quotedSpans: Span[] = [];
@@ -258,10 +315,10 @@ export function extractCitations(text: string): Citation[] {
   for (const m of text.matchAll(RE_QUOTED_DOC)) {
     const start = m.index ?? 0;
     const end = start + m[0].length;
-    quotedSpans.push([start, end]);
+    const full = delimiterGroup(m, QUOTED_DOC_GROUP_STRIDE, 1);
+    if (full === undefined || !isFileNameShaped(full)) continue; // not a name: ignore the quote entirely
     if (overlapsAny(start, end, nodeIdSpans)) continue;
-    const full = m[1] ?? m[2] ?? m[3] ?? "";
-    if (!full) continue;
+    quotedSpans.push([start, end]);
     docMentions.push({ start, end, full, page: quotedPageByStart.get(start) ?? null });
   }
 

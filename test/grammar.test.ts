@@ -281,8 +281,8 @@ describe("extractCitations - delimited document names containing spaces (review 
     ]);
   });
 
-  it("takes a single-quoted name verbatim, and binds a page following the closing quote", () => {
-    expect(extractCitations("See 'Annual Report 2024.pdf', p.3.")).toEqual([
+  it("binds a page marker following the closing delimiter of a double-quoted name", () => {
+    expect(extractCitations('See "Annual Report 2024.pdf", p.3.')).toEqual([
       {
         token: "Annual Report 2024.pdf#p3",
         docName: "Annual Report 2024.pdf",
@@ -356,6 +356,101 @@ describe("extractCitations - review fix: Minor", () => {
   it("does not let an absurdly long page number drift the canonical token", () => {
     expect(extractCitations("See report.pdf p.99999999999999999999 for details.")).toEqual([
       { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+});
+
+describe("extractCitations - a prose quote must not become the document name (re-review fix: Critical)", () => {
+  it("no longer treats a single-quoted name as a delimiter (dropped per the ruling)", () => {
+    // Apostrophes are constant in English prose; a single-quoted file name in agent output
+    // is vanishingly rare. Falls back to the documented bare-name limitation: read as its
+    // last space-free segment.
+    expect(extractCitations("See 'Annual Report 2024.pdf' here.")).toEqual([
+      { token: "2024.pdf", docName: "2024.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("rejects an ordinary quotation and lets the bare name inside it stand", () => {
+    expect(extractCitations('He said "the data comes from report.pdf" yesterday.')).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("does not treat a possessive apostrophe before .pdf as a delimiter", () => {
+    expect(extractCitations("We don't have report.pdf's data.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("does not treat a possessive apostrophe elsewhere in the sentence as a delimiter", () => {
+    expect(extractCitations("Per the team's view of report.pdf's data.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("accepts a two-word backtick-quoted span even when it reads like a shell command (accepted trade-off)", () => {
+    // "cat report.pdf" is 2 words, under the 4-word cap, and file-name-shaped - genuinely
+    // indistinguishable from a real two-word file name. Operator-accepted: the direction of
+    // the resulting error is a single false `unresolved` for THIS citation, not a mass
+    // deletion of every citation in the document (the failure mode this fix round exists to
+    // close). Pinned here so a future change notices if this trade-off shifts.
+    expect(
+      extractCitations("Markdown code `cat report.pdf` then `open other.pdf` done."),
+    ).toEqual([
+      { token: "cat report.pdf", docName: "cat report.pdf", pages: null, nodeId: null },
+      { token: "open other.pdf", docName: "open other.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("ignores mismatched delimiters and lets the bare name inside stand", () => {
+    const text = 'The file is "report.pdf` for details.';
+    expect(extractCitations(text)).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("degrades gracefully on nested delimiters: the outer span is rejected, both inner bare names survive", () => {
+    // The outer double-quote match is structurally valid (content ends in "beta.pdf" right
+    // before the closing quote) but contains a backtick, which fails the file-name-shape
+    // check - rejected, so it must not suppress EITHER bare name inside it.
+    expect(extractCitations("See \"quoted `alpha.pdf` beta.pdf\" here.")).toEqual([
+      { token: "alpha.pdf", docName: "alpha.pdf", pages: null, nodeId: null },
+      { token: "beta.pdf", docName: "beta.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("does not let a rejected quote swallow the real document, its page, or its node in a realistic paragraph", () => {
+    const text =
+      'The vendor\'s contract is summarized in contract.pdf, p.12. The reviewer noted ' +
+      '"the risk section is missing from contract.pdf" and asked for node_id: 0042. ' +
+      "See also appendix.pdf.";
+    expect(extractCitations(text)).toEqual([
+      { token: "contract.pdf#p12", docName: "contract.pdf", pages: { from: 12, to: 12 }, nodeId: null },
+      { token: "contract.pdf#n0042", docName: "contract.pdf", pages: null, nodeId: "0042" },
+      { token: "appendix.pdf", docName: "appendix.pdf", pages: null, nodeId: null },
+    ]);
+  });
+});
+
+describe("extractCitations - re-review fix: Minor", () => {
+  it("does not re-admit cross-sentence node binding when a sentence genuinely ends in 'p.'", () => {
+    // "p." is only a page abbreviation - and only then exempt from being a sentence
+    // boundary - when a page NUMBER actually follows it. Here it is followed by "Then", not
+    // a digit, so it is a real sentence end and node_id: 0003 is in the NEXT sentence.
+    expect(extractCitations("Read report.pdf, p. Then node_id: 0003.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+      { token: "node_id:0003", docName: null, pages: null, nodeId: "0003" },
+    ]);
+  });
+
+  it("still treats p. before a page number as one sentence (regression check)", () => {
+    expect(extractCitations("See report.pdf p. 5, node_id: 0003 for details.")).toEqual([
+      {
+        token: "report.pdf#p5&n0003",
+        docName: "report.pdf",
+        pages: { from: 5, to: 5 },
+        nodeId: "0003",
+      },
     ]);
   });
 });
