@@ -167,12 +167,17 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(/`details`\s*-\s*per citation `\{ token, status, title, suggestion \}`/);
     // `total` counts DISTINCT canonical TOKENS, not documents - re-citing the same token
     // collapses, but the same document with two different pages counts twice (Minor fix:
-    // the previous wording claimed same-document collapse, which is false).
+    // the previous wording claimed same-document collapse, which is false). The `total` -
+    // lead-in is pinned together with the parenthetical so the two can't drift apart.
     expect(description).toMatch(
-      /count of DISTINCT recognized-shape citations \(identical citations collapse to one; different pages of the same document count separately\)/i,
+      /`total`\s*-\s*the count of DISTINCT recognized-shape citations \(identical citations collapse to one; different pages of the same document count separately\)/i,
     );
-    // `suggestion` is described as something to act on, not just a field name.
-    expect(description).toMatch(/suggestion`? may carry a near-miss document name/i);
+    // `suggestion` is described as something to act on, not just a field name - both of its
+    // two forms (a near-miss name, OR an explanation of what could not be checked) are
+    // pinned together, not just the first.
+    expect(description).toMatch(
+      /suggestion`? may carry a near-miss document name or an explanation of what could not be checked/i,
+    );
 
     // --- Critical 3: a `resolved` verdict can carry an unverified page ---
     expect(description).toMatch(
@@ -181,18 +186,27 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(/the page itself was never verified/i);
     expect(description).toMatch(/cited page falls within the document's real page count, only when the backend reports one/i);
     expect(description).toMatch(/cited node id exists in the document's real outline/i);
+    // The "What is verified:" lead-in and the document-existence clause - previously only
+    // the page/node continuations above were pinned, leaving the document-existence claim
+    // itself (and the header framing it) deletable.
+    expect(description).toMatch(/What is verified: that the cited document exists;/);
 
     // --- the primary `unresolved` action directive (Important 5 named this explicitly -
     // `/do not delete them/i` below guards only the `unchecked` half of the pair) ---
     expect(description).toMatch(
       /For each `unresolved` citation, remove the claim or replace it with a verified citation\./,
     );
-    // --- outage-safety imperatives ---
-    expect(description).toMatch(/do not delete them/i);
-    // MCP-error clause - deliberately distinct from the bare-node "never `unresolved`" clause
-    // below (defect 1): this one reads "never AS `unresolved`".
+    // --- outage-safety imperatives - the reason clause ("the corpus was never consulted...")
+    // is pinned together with "Do NOT remove", not just the trailing "do not delete them" ---
     expect(description).toMatch(
-      /treat every citation in the text as `?unchecked`? in that case, never as `?unresolved/i,
+      /Do NOT remove `unchecked` citations - the corpus was never consulted for them and they may well be valid/,
+    );
+    expect(description).toMatch(/do not delete them/i);
+    // MCP-error clause - the "if the call itself fails" trigger is pinned together with its
+    // consequence, not just the back half ("never AS `unresolved`", distinct from the
+    // bare-node "never `unresolved`" clause below, defect 1).
+    expect(description).toMatch(
+      /If the call itself fails, the tool returns an MCP error result instead of this JSON; treat every citation in the text as `?unchecked`? in that case, never as `?unresolved/i,
     );
 
     // --- Critical 1: hyphen, en dash, and spaced "to" are the accepted range separators;
@@ -204,6 +218,13 @@ describe("createServer verify_citations tool", () => {
       /any other separator \(e\.g\. an em dash\) silently truncates to the first page instead of the range/i,
     );
     expect(description).toMatch(/a page in no recognized form at all is simply not checked/i);
+    // The base recognized shape - a bare document citation - was previously assumed covered
+    // by neighbouring assertions but had no dedicated pin of its own.
+    expect(description).toMatch(/a document written as `<name>\.pdf`/);
+    // "rewrite it in a recognized form and call again" - the concrete instruction half of
+    // the `total: 0` guard, previously left unpinned even though the guard itself (further
+    // below) was.
+    expect(description).toMatch(/rewrite it in a recognized form and call again/i);
 
     // --- recognized shapes, pinned to the literal example list (a generic word like
     // "recognized" can be satisfied elsewhere, so this pins the actual examples) ---
@@ -215,8 +236,12 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(/matched CASE-SENSITIVELY/);
 
     // --- Critical 2: the accepted same-line forms (now shared by quoted AND bare names -
-    // no exception is stated, because none exists in the current grammar) ---
-    expect(description).toMatch(/connector \(`on`\/`at`\/`see`\)/);
+    // no exception is stated, because none exists in the current grammar). The "glued
+    // directly" and comma/semicolon forms are pinned together with the connector-word form,
+    // not just the newer connector/bracket additions. ---
+    expect(description).toMatch(
+      /either glued directly, after `,`\/`;`, after a connector \(`on`\/`at`\/`see`\)/,
+    );
     expect(description).toMatch(/inside `\(\)`\/`\[\]`/);
     expect(description).toMatch(/on the SAME LINE, with no other document name in between/i);
 
@@ -232,8 +257,11 @@ describe("createServer verify_citations tool", () => {
     // --- quoting rule: the CONJUNCTION is what carries the meaning, not its two halves -
     // pinning only "double quotes or backticks" and only "file-name-shaped" separately
     // would still pass a rewording that splits this into two sentences and drops the "AND"
-    // (i.e. "quoting alone suffices"), so the joined phrase is pinned as one unit ---
-    expect(description).toMatch(/wrapped in double quotes or backticks AND be file-name-shaped/i);
+    // (i.e. "quoting alone suffices"), so the joined phrase is pinned as one unit, together
+    // with its trigger condition ("a name containing spaces") ---
+    expect(description).toMatch(
+      /A name containing spaces must be wrapped in double quotes or backticks AND be file-name-shaped/i,
+    );
     // The allowed-character set (not a forbidden-character list, which reads as exhaustive
     // but omits `(`, `)`, `+`, `/`, `#`, etc. - Minor fix).
     expect(description).toMatch(
@@ -251,22 +279,33 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(/silently checked AS `?Report\.pdf`?, a DIFFERENT document/);
     expect(description).toMatch(/check `?title`? on a `?resolved`? verdict to catch this/i);
 
-    // --- bare node_id rule ---
-    expect(description).toMatch(/reported `?unchecked`?, never `?unresolved`? - node numbering is per-document/i);
+    // --- bare node_id rule - the trigger condition ("with no document in the same
+    // sentence") is pinned together with the verdict, not just the verdict half ---
+    expect(description).toMatch(
+      /A bare `?node_id:`? with no document in the same sentence is reported `?unchecked`?, never `?unresolved`? - node numbering is per-document/i,
+    );
     expect(description).toMatch(/node id alone identifies nothing/i);
 
     // --- the false-assurance guard: `total: 0` tied in the same breath to "not a clean bill
     // of health" ---
     expect(description).toMatch(/total`?:?\s*0[^.;]{0,200}not a clean bill of health/i);
-    // --- combined page+node citation returns one verdict ---
-    expect(description).toMatch(/carrying both a page and a node returns ONE verdict/i);
+    // --- combined page+node citation returns one verdict, AND its consequence (which half
+    // failed is only knowable from `suggestion`) - pinned as one unit, not just the first
+    // half ---
+    expect(description).toMatch(
+      /carrying both a page and a node returns ONE verdict, so an `?unresolved`? there may mean either half failed - `?suggestion`? says which/i,
+    );
 
     // --- Important 4: the canonical token shape, so an agent can map a token back to its
-    // own draft, and can tell "page checked" from "page dropped" ---
-    expect(description).toMatch(/is a canonical form, not verbatim text/i);
+    // own draft, and can tell "page checked" from "page dropped" - the `token` subject and
+    // the final "map it back" instruction are pinned together with the shape grammar, not
+    // left as unpinned lead-in/trailer text ---
+    expect(description).toMatch(
+      /`token` \(and each `unresolved`\/`unchecked` entry\) is a canonical form, not verbatim text/i,
+    );
     expect(description).toMatch(/`<document>` plus optional `#p<page-or-range>`/);
     expect(description).toMatch(
-      /`#n<node-id>`, `&n<node-id>` after a page, or bare `node_id:<id>`/,
+      /`#n<node-id>`, `&n<node-id>` after a page, or bare `node_id:<id>`\) - map it back to your draft before acting\./,
     );
   });
 
