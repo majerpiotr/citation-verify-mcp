@@ -232,3 +232,130 @@ describe("extractCitations - no citations", () => {
     expect(extractCitations("This is plain prose with no citations at all.")).toEqual([]);
   });
 });
+
+describe("extractCitations - sentence boundary must not under-detect (review fix: Critical 1)", () => {
+  it("does not bind a node across a boundary whose next sentence starts with a lowercase word", () => {
+    expect(extractCitations("See report.pdf for details. also check node_id: 0003.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+      { token: "node_id:0003", docName: null, pages: null, nodeId: "0003" },
+    ]);
+  });
+
+  it("does not bind a node across a boundary whose next sentence starts with a digit", () => {
+    expect(
+      extractCitations("Costs are covered in budget.pdf. 2024 figures come from node_id: 0012."),
+    ).toEqual([
+      { token: "budget.pdf", docName: "budget.pdf", pages: null, nodeId: null },
+      { token: "node_id:0012", docName: null, pages: null, nodeId: "0012" },
+    ]);
+  });
+
+  it("treats an exclamation mark as a sentence boundary too", () => {
+    expect(extractCitations("Read report.pdf! node_id: 0003 is next.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+      { token: "node_id:0003", docName: null, pages: null, nodeId: "0003" },
+    ]);
+  });
+});
+
+describe("extractCitations - node binds to the nearer edge of a document mention (review fix: Critical 2)", () => {
+  it("prefers a long document name immediately before the node over a short one much further away", () => {
+    expect(
+      extractCitations("See verylongdocumentname.pdf, node_id: 0003, and b.pdf follows."),
+    ).toEqual([
+      {
+        token: "verylongdocumentname.pdf#n0003",
+        docName: "verylongdocumentname.pdf",
+        pages: null,
+        nodeId: "0003",
+      },
+      { token: "b.pdf", docName: "b.pdf", pages: null, nodeId: null },
+    ]);
+  });
+});
+
+describe("extractCitations - delimited document names containing spaces (review fix: Critical 3)", () => {
+  it("takes a double-quoted name verbatim, spaces included", () => {
+    expect(extractCitations('The source is "Annual Report.pdf".')).toEqual([
+      { token: "Annual Report.pdf", docName: "Annual Report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("takes a single-quoted name verbatim, and binds a page following the closing quote", () => {
+    expect(extractCitations("See 'Annual Report 2024.pdf', p.3.")).toEqual([
+      {
+        token: "Annual Report 2024.pdf#p3",
+        docName: "Annual Report 2024.pdf",
+        pages: { from: 3, to: 3 },
+        nodeId: null,
+      },
+    ]);
+  });
+
+  it("takes a backtick-quoted name verbatim", () => {
+    expect(extractCitations("See `Annual Report.pdf` for details.")).toEqual([
+      { token: "Annual Report.pdf", docName: "Annual Report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("does not also emit a bare citation for the space-free tail inside a quoted name", () => {
+    expect(extractCitations('The source is "Annual Report.pdf".')).toHaveLength(1);
+  });
+
+  it("still reads an unquoted multi-word name as its last space-free segment (documented limitation)", () => {
+    // Bare prose gives no way to tell how far back a name extends; see the comment next to
+    // DOC_NAME_PATTERN in src/grammar.ts. Callers who need spaces in a name must quote it -
+    // this pins the current, deliberate behaviour so a future change notices it.
+    expect(extractCitations("The source is Annual Report 2024.pdf, p.3.")).toEqual([
+      { token: "2024.pdf#p3", docName: "2024.pdf", pages: { from: 3, to: 3 }, nodeId: null },
+    ]);
+  });
+});
+
+describe("extractCitations - page adjacency does not cross a newline (review fix: Important 4)", () => {
+  it("does not bind a page marker on a later line to a document mentioned on an earlier line", () => {
+    expect(extractCitations("See report.pdf,\n\n   pages 250-260 of the appendix.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+});
+
+describe("extractCitations - the .pdf extension matches case-insensitively (review fix: Important 5)", () => {
+  it("recognizes an uppercase extension and preserves it verbatim", () => {
+    expect(extractCitations("The source is REPORT.PDF and nothing else.")).toEqual([
+      { token: "REPORT.PDF", docName: "REPORT.PDF", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("recognizes an uppercase extension with a page", () => {
+    expect(extractCitations("The source is Guide.PDF, p.4.")).toEqual([
+      { token: "Guide.PDF#p4", docName: "Guide.PDF", pages: { from: 4, to: 4 }, nodeId: null },
+    ]);
+  });
+});
+
+describe("extractCitations - a node id's own text never synthesizes a document (review fix: Important 6)", () => {
+  it("does not treat a .pdf-shaped substring inside a node id as a document", () => {
+    expect(extractCitations("The pointer is node_id: sub/chapter.pdf here.")).toEqual([
+      { token: "node_id:sub/chapter.pdf", docName: null, pages: null, nodeId: "sub/chapter.pdf" },
+    ]);
+  });
+});
+
+describe("extractCitations - review fix: Minor", () => {
+  it("requires at least one real character in the document name", () => {
+    expect(extractCitations("A stray ..pdf mention.")).toEqual([]);
+  });
+
+  it("accepts an en dash as a page range separator", () => {
+    expect(extractCitations("See report.pdf pp.5–7 for details.")).toEqual([
+      { token: "report.pdf#p5-7", docName: "report.pdf", pages: { from: 5, to: 7 }, nodeId: null },
+    ]);
+  });
+
+  it("does not let an absurdly long page number drift the canonical token", () => {
+    expect(extractCitations("See report.pdf p.99999999999999999999 for details.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+});
