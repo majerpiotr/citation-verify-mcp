@@ -620,9 +620,18 @@ describe("extractCitations - generic bracket-tag citation (spike A addition 3)",
     expect(extractCitations("See [node:] for details.")).toEqual([]);
   });
 
-  it("does not let a .pdf-shaped bracket-tag value synthesize a document", () => {
+  it("extracts the real document from inside a bracket-tag value instead of swallowing it (whole-branch review fix, defect 2)", () => {
+    // Previously this test pinned the opposite behavior (swallow the whole value, report
+    // unchecked), framed only as "must not synthesize a document out of nothing". The
+    // whole-branch review found the missed case: when the bracketed value IS a real
+    // citation, swallowing it does not protect anything - it hides a checkable document
+    // behind docName: null, and CLAUDE.md hard rule 4 tells a consuming agent to KEEP
+    // every `unchecked` citation. A fabricated document inside a bracket tag must be
+    // checked and reported `unresolved`, not preserved by policy. Corrected: the
+    // bracket-tag machinery steps aside when the value is document-shaped and lets the
+    // ordinary document scan read the real citation out of it.
     expect(extractCitations("See [node:report.pdf] for details.")).toEqual([
-      { token: "node_id:report.pdf", docName: null, pages: null, nodeId: "report.pdf" },
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
     ]);
   });
 
@@ -650,6 +659,76 @@ describe("extractCitations - generic bracket-tag citation (spike A addition 3)",
     // verification, the same unverifiable claim.
     expect(extractCitations("See node_id: 0003 and [node:0003] together.")).toEqual([
       { token: "node_id:0003", docName: null, pages: null, nodeId: "0003" },
+    ]);
+  });
+});
+
+describe("extractCitations - a bracket-tag value containing a real citation is extracted, not swallowed (whole-branch review fix, defect 2)", () => {
+  it("extracts a fabricated-looking but real-shaped document name from inside a bracket tag", () => {
+    // The document name itself may or may not exist in the corpus - that is the
+    // resolver's job to check (`unresolved` if not found). The grammar's job is only to
+    // make sure it is SEEN, so a fabrication cannot hide behind `unchecked`.
+    expect(extractCitations("[cite: fabricated-report.pdf]")).toEqual([
+      { token: "fabricated-report.pdf", docName: "fabricated-report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("extracts a document plus its page from inside a bracket tag", () => {
+    expect(extractCitations("[Source: report.pdf p.12]")).toEqual([
+      { token: "report.pdf#p12", docName: "report.pdf", pages: { from: 12, to: 12 }, nodeId: null },
+    ]);
+  });
+
+  it("extracts a document and binds a node cited together inside the same bracket tag", () => {
+    expect(extractCitations("[note: see report.pdf, node_id: 0003]")).toEqual([
+      { token: "report.pdf#n0003", docName: "report.pdf", pages: null, nodeId: "0003" },
+    ]);
+  });
+
+  it("still reserves and reports unchecked for a value that is NOT document-shaped (regression)", () => {
+    expect(extractCitations("[node: some-doc-id-123]")).toEqual([
+      { token: "node_id:some-doc-id-123", docName: null, pages: null, nodeId: "some-doc-id-123" },
+    ]);
+  });
+
+  it("still excludes a URL-valued tag entirely - defect 1's fix must not fight defect 2's (regression)", () => {
+    expect(extractCitations("[Source: https://example.com/doc.pdf]")).toEqual([]);
+  });
+});
+
+describe("extractCitations - a bare match that is part of a URL is not read as a document (whole-branch review fix, defect 1)", () => {
+  it("does not read a bare https URL ending in .pdf as a document", () => {
+    expect(extractCitations("Source: https://example.com/whitepaper.pdf for the numbers.")).toEqual([]);
+  });
+
+  it("does not read a bare http URL with a page marker as a document", () => {
+    expect(extractCitations("See http://example.org/files/annual-report.pdf p.12.")).toEqual([]);
+  });
+
+  it("still extracts a real document name when an unrelated URL appears elsewhere in the text", () => {
+    expect(
+      extractCitations(
+        "See https://example.com/context.pdf for background, but the real numbers are in report.pdf.",
+      ),
+    ).toEqual([{ token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null }]);
+  });
+
+  it("deliberate scope decision: a scheme-relative URL ('//host/doc.pdf') is NOT excluded", () => {
+    // "://" is the one unambiguous signal used, matching the bracket-tag path's own rule
+    // exactly. Bare "//" is a much weaker signal (it is not unique to URLs) and is left
+    // unhandled rather than guessed at - see the comment on isUrlPrefixed in
+    // src/grammar.ts for the full reasoning.
+    expect(extractCitations("See //example.com/report.pdf for details.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("deliberate scope decision: a bare host with no scheme marker ('host/doc.pdf') is NOT excluded", () => {
+    // There is no reliable syntactic signal that distinguishes "a domain" from an ordinary
+    // dotted document-name segment - DOC_NAME_PATTERN already allows dots and hyphens in a
+    // real name - so guessing here would risk rejecting a legitimate name.
+    expect(extractCitations("See example.com/report.pdf for details.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
     ]);
   });
 });

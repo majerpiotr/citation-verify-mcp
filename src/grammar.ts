@@ -144,6 +144,47 @@ const RANGE_SEP = String.raw`(?:[ \t]*[-–][ \t]*|[ \t]+${ci("to")}[ \t]+)`;
 // source of anchors a node id can bind to (see the binding pass below).
 const RE_DOC = new RegExp(DOC_NAME_PATTERN, "g");
 
+// Whole-branch review fix (defect 1): a bare, unquoted match must not be read as a citable
+// document when it is actually the trailing segment of a URL, e.g.
+// "https://example.com/whitepaper.pdf". The bracket-tag path already excludes a URL-valued
+// tag entirely (see the "://" check on RE_BRACKET_TAG values below, for spike-a Shape 3: "a
+// different citation family this tool must not resolve") - the SAME rule must hold for a
+// bare, unbracketed URL, or the two paths disagree about the identical input shape and a
+// perfectly valid external reference gets read as an unresolved (and then deleted)
+// citation.
+//
+// Signal: scan backward from the match's start, staying within the contiguous run of
+// non-whitespace characters immediately preceding it on the SAME LINE (a real URL has no
+// internal whitespace, and a newline always ends the run), and check whether that run
+// contains "://" anywhere. This reuses the exact same substring test the bracket-tag path
+// already applies, rather than inventing a second, possibly-inconsistent detector.
+//
+// Deliberate scope decision, made explicitly rather than left implicit:
+//   - Scheme-relative ("//example.com/doc.pdf") is NOT treated as a URL here. Bare "//" is
+//     a much weaker signal than "://" - it is not unique to URLs - and widening the check
+//     to it would risk rejecting a legitimate name for an unproven real-world benefit. This
+//     keeps the bare-match rule consistent with the bracket-tag rule, which also only
+//     recognizes "://".
+//   - A bare host with no scheme marker at all ("example.com/doc.pdf") is NOT treated as a
+//     URL either. There is no reliable syntactic signal that distinguishes "a domain" from
+//     an ordinary dotted document-name segment - DOC_NAME_PATTERN already allows dots and
+//     hyphens in a real name - so attempting to detect this would risk rejecting a
+//     legitimate name merely because some unrelated URL-shaped text appears elsewhere.
+//     "://" is the one unambiguous signal available; both weaker forms are left unhandled
+//     rather than guessed at.
+//   - The rule only ever looks BACKWARD from a specific match, and only within its own
+//     unbroken non-whitespace run, so a URL appearing elsewhere in the text (a different
+//     run) never affects an unrelated, legitimate document mention.
+function isUrlPrefixed(text: string, start: number): boolean {
+  let i = start;
+  while (i > 0) {
+    const ch = text[i - 1];
+    if (ch === "\n" || ch === " " || ch === "\t" || ch === "\r") break;
+    i--;
+  }
+  return text.slice(i, start).includes("://");
+}
+
 // Tool-description audit: "report.pdf (page 5)" and "report.pdf on page 5" are common
 // real prose forms that the plain [,;]? separator below does not reach, so the page claim
 // was silently dropped (a citation reported `resolved` with the page half never checked -
@@ -229,6 +270,19 @@ const RE_NODE_ID = new RegExp(String.raw`${NODE_ID_KEYWORD}[:=]\s*([A-Za-z0-9_\-
 // or a newline, whichever comes first, so a stray unclosed "[" can never swallow unrelated
 // later text.
 const RE_BRACKET_TAG = /\[[A-Za-z]+[ \t]*:[ \t]*([^\]\n]+)\]/gd;
+
+// Whole-branch review fix (defect 2): true when a bracket-tag's VALUE itself contains a
+// recognizable bare document name (RE_DOC-matchable). Determines whether the bracket-tag
+// loop below should step aside and let the ordinary document/page/node scans - which run
+// unconditionally over the whole text - read the real citation out of the value, instead of
+// reserving the span and reporting a synthetic, unverifiable "node_id:<raw value>" token.
+// Uses matchAll (never .test()/.exec()) on the module-level `g` regex, per this grammar's
+// own rule, and matchAll is safe to call repeatedly / on a substring: it constructs its own
+// iterator per call rather than mutating RE_DOC's shared lastIndex.
+function containsDocName(value: string): boolean {
+  for (const _ of value.matchAll(RE_DOC)) return true;
+  return false;
+}
 
 // Sentence boundary, the concrete definition "same sentence" is built on: a run of .!?
 // followed by whitespace (or by end of string) is a boundary; a run of newlines always
@@ -375,7 +429,6 @@ export function extractCitations(text: string): Citation[] {
   for (const m of text.matchAll(RE_BRACKET_TAG)) {
     const start = m.index ?? 0;
     const groupSpan = m.indices?.[1];
-    if (groupSpan) idSpans.push([groupSpan[0], groupSpan[1]]);
     const value = m[1].trim();
     if (!value) continue; // e.g. "[node:]" - nothing to cite
     // A URL-valued tag belongs to a different citation family entirely (spike-a Shape 3:
@@ -384,8 +437,26 @@ export function extractCitations(text: string): Citation[] {
     // documents only and must not attempt to resolve a web source. "://" is the simplest
     // defensible signal: every URL scheme actually in use (http, https, even a bare
     // "file://") includes it, an ordinary slug/id never does, and it needs no allowlist of
-    // schemes that could go stale as new ones appear.
+    // schemes that could go stale as new ones appear. Checked FIRST, before the
+    // document-shape check below, because a URL's path segment can itself look
+    // document-shaped (".../doc.pdf") and must not be routed into that branch.
     if (value.includes("://")) continue;
+    // Whole-branch review fix (defect 2): previously this loop reserved the ENTIRE
+    // captured value as an idSpan and always emitted an opaque `node_id:<raw value>`
+    // citation, unconditionally - which swallowed a REAL citation whole whenever the value
+    // itself named a document ("[cite: fabricated-report.pdf]", "[Source: report.pdf
+    // p.12]"). CLAUDE.md hard rule 4: a consuming agent is told to KEEP every `unchecked`
+    // citation, so a fabricated document hidden behind docName: null was preserved by
+    // policy instead of being checked and reported `unresolved` - the mirror failure of
+    // defect 1. When the value is document-shaped, step aside entirely: reserve nothing
+    // here, emit nothing here, and let the ordinary document/page/node passes below - which
+    // already scan the WHOLE text unconditionally, brackets or not - read the real citation
+    // straight out of the value's own character span (this also lets a node_id: cited in
+    // the same bracket bind to that document exactly as it would in ordinary prose). Only a
+    // value that is NOT document-shaped (an invented slug like "some-doc-id-123") keeps the
+    // original reserve-the-span-and-report-unchecked behavior.
+    if (containsDocName(value)) continue;
+    if (groupSpan) idSpans.push([groupSpan[0], groupSpan[1]]);
     instances.push({
       index: start,
       citation: { token: `node_id:${value}`, docName: null, pages: null, nodeId: value },
@@ -432,6 +503,7 @@ export function extractCitations(text: string): Citation[] {
     const start = m.index ?? 0;
     const end = start + m[0].length;
     if (overlapsAny(start, end, idSpans) || overlapsAny(start, end, quotedSpans)) continue;
+    if (isUrlPrefixed(text, start)) continue; // defect 1: a URL's own path is not a document
     docMentions.push({ start, end, full: m[0], page: pageByStart.get(start) ?? null });
   }
 
