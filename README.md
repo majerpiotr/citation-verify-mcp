@@ -129,14 +129,19 @@ to any other extension (`.docx`, `.txt`, `.md`, ...) is not extracted at all.
 own lookup is case-sensitive, so a citation of `Report.PDF` will not match an existing
 `report.pdf`). The `.pdf` extension itself is matched case-insensitively.
 
-**Page.** Optionally follows a document, on the **same line**, with nothing else between
-them but a recognized separator:
+**Page.** Optionally follows a document - **bare or quoted alike**, the same rules apply
+to both - on the **same line**, with nothing else between them but a recognized
+separator:
 - glued directly, or after a `,` or `;`, or after one connector word from a closed list
   (`on`, `at`, `see`), or opened by `(` or `[`.
 - Keyword `p.`, `pp.`, `page`, or `pages` (case-insensitive).
-- A single page (`p.5`) or a range (`pp. 5-7`, `pages 5 to 7`). A range separator is a
-  hyphen, an en dash, or the word "to" - the word "through" or any other phrasing is not
-  recognized.
+- A single page (`p.5`) or a range (`pp. 5-7`, `pp. 5 - 7`, `pages 5 to 7`). A range
+  separator is a plain hyphen or the wider "en dash" character some editors substitute
+  for one (spaces around either are optional), or the word "to" (spaces around it are
+  required). Any other separator - the wider "em dash" character, the word "through", or
+  anything else - is not read as a range: the number after it is silently dropped and
+  only the first page is checked, so a range joined that way is captured and checked as
+  its first page alone.
 - A page marker on a different line from its document is not recognized - only a page
   form written directly against its document counts.
 
@@ -145,6 +150,16 @@ relative to the document and the page. It binds to the **nearest document mentio
 same sentence** (a sentence never crosses a newline). A document with both a page and a
 node in the same sentence produces **one combined citation**
 (`<name>.pdf#p<N>&n<node-id>`), not two.
+
+**Bracket-tag identifier.** `[<word>: <id>]` - a square-bracketed keyword (any run of
+letters, chosen by whoever wrote the citation: `node`, `chunk`, `Source`, ...), a colon
+(optional surrounding spaces), an id running up to the closing `]` or a newline, and a
+literal closing `]`. Examples: `[node:some-doc-id-123]`, `[chunk: abc-42]`. This shape is
+always reported **`unchecked`** and never binds to a nearby document - its id space has
+no defined relationship to the backend's per-document node ordinals, so cite the real
+`<name>.pdf` (optionally with a page or `node_id:`) to get an actual verdict. A tag whose
+value contains `://` (a URL) is excluded entirely and is not treated as a citation of any
+kind.
 
 **A bare `node_id: <id>` with no document anywhere in the same sentence is `unchecked`,
 never `unresolved`.** Node numbering is per-document - every document has a node
@@ -176,13 +191,17 @@ Single quotes are **not** a delimiter, deliberately - ordinary apostrophes in pr
   keywords.
 - A page marker separated from its document by more prose than the closed connector list
   allows, or on a different line.
-- A page range joined by any word other than "to".
+- A page range joined by an em dash, the word "through", or anything other than a hyphen,
+  en dash, or "to" - such a range is not dropped, but truncated to its first page only
+  (see the "Page" bullet above).
 - A document name with spaces, unquoted, or quoted but failing the file-name shape check
   (more than 4 words, over 80 characters, or carrying an apostrophe/`&`/comma/colon/
   non-ASCII character) - both fall back to a truncated, effectively-different citation
   rather than being dropped.
 - A single-quoted name (`'report.pdf'`).
-- A bare `node_id` with no document in its sentence - extracted, but always `unchecked`.
+- A bare `node_id` with no document in its sentence, or a bracket tag - both are
+  extracted, but always `unchecked`.
+- A bracket-tag value containing `://` (a URL) - not treated as a citation at all.
 
 ## What is and is not verified
 
@@ -212,6 +231,44 @@ finalizing.
   clean bill of health, and not proof the text has no citations. If citations exist in
   another form, they need to be rewritten into a recognized shape (see above) before they
   can be checked.
+
+## Instructing your agent
+
+The block below is meant to be pasted directly into a citing agent's system prompt. Its
+crux is the first paragraph: the agent must cite the document's real **file name**, not
+an invented id or a display title - nothing else will ever resolve, no matter how it is
+formatted.
+
+```
+Before finalizing any response that cites a source document, call `verify_citations` on
+your full draft text.
+
+Every citation must name the source's real file name, including its extension (for
+example report.pdf), exactly as it is stored. An invented id, a short label, or the
+document's display title will never resolve, however it is written.
+
+Cite in one of these forms:
+- A document alone: report.pdf
+- A document with a page: report.pdf p.12  or  report.pdf pp. 5-9
+- A document with a node: report.pdf, node_id: 0007
+- A name with spaces, in double quotes: "Annual Report.pdf" p.3
+
+After the call: for every unresolved citation, remove the claim or replace it with one
+that resolves. For every unchecked citation, keep it as written - the corpus was never
+consulted, so it may well be valid; do not delete it. Read suggestion even on a resolved
+citation - a cited page is sometimes not verifiable, and the citation still resolves
+without it. A citation written in any other form is not checked at all: total: 0 means
+nothing checkable was found, not that the draft is clean.
+```
+
+This is an instructed format, not a guaranteed one. One real consuming application that
+was investigated had every one of its citing agent roles uniformly instructed to use a
+single citation format - yet in the one real transcript available, that format appeared
+zero times. What the model actually wrote instead was free-text prose naming a source by
+its human-readable title, with no file name, id, or page attached - nothing any grammar
+could check. Before relying on this tool, verify what your own agent actually writes in
+real output, not just what its instructions say it will. Full write-up:
+`docs/spike-a-findings.md`.
 
 ## Development
 
@@ -244,11 +301,25 @@ npx vitest run test/integration.test.ts
 
 ## Known limits
 
-- **The citation shapes a consuming agent actually emits have not been confirmed against
-  a real system.** The grammar above was built against the design's assumptions and the
-  backend's observed behavior, not against representative agent output, so its coverage
-  is provisional. If an agent's real citations do not fit these shapes, they will not be
-  extracted at all - `total` simply undercounts, silently.
+- **The citation shapes a consuming agent actually emits were checked against one real
+  application, and the finding was uncomfortable.** That application's citing agent
+  roles were uniformly instructed to use a single bracket-tag format, and the grammar
+  above now recognizes it (as `unchecked`, per "Recognized citation shapes"). But in the
+  one real transcript investigated, that instructed format was never actually used - the
+  model wrote free-text prose naming a source by its display title instead, which no
+  grammar can check. This does not mean the grammar's shapes are wrong; it means an
+  instructed format is not a guaranteed one, and no amount of pattern-matching fixes an
+  agent that names no checkable source at all. See "Instructing your agent" above and
+  `docs/spike-a-findings.md` for the full write-up. Treat this as evidence to verify
+  against your own agent's real output, not as a solved problem.
+- A citation-shaped string that is not actually a citation can still be flagged: a
+  bracket tag like `[TODO: fix this]` or `[note: reminder]` matches the generic
+  `[<word>:<id>]` pattern and is reported as an `unchecked` citation. Harmless - it is
+  never treated as `resolved` or `unresolved` - but it adds noise to `details`.
+- The connector-word list (`on`, `at`, `see`), the quoted-name shape limits (at most 4
+  words, 80 characters), and the bracket-tag keyword acceptance are fixed choices made
+  without corpus evidence of what real agents actually write. They may need revisiting
+  once more real output is available.
 - Only `.pdf` documents are recognized; there is no support for any other extension.
 - An unquoted or shape-rejected document name containing a space is read as its last
   space-free segment, not as the real name - see "Quoted names" above.
