@@ -125,16 +125,20 @@ const NODE_ID_KEYWORD = ci("node_id");
 // engine to fail every length from 1..MAX_PAGE_DIGITS in turn when more digits follow.
 const MAX_PAGE_DIGITS = 6;
 const PAGE_NUMBER = String.raw`\d{1,${MAX_PAGE_DIGITS}}(?!\d)`;
-// Accepts a hyphen, an en dash, or the word "to" (surrounded by mandatory horizontal
-// whitespace, so it cannot glue to the digits either side) between the two numbers of a
-// range. The en dash is what most editors produce for "5-7" once autocorrect/smart-
-// punctuation gets involved; "to" is what an agent writing prose naturally produces
-// ("pages 5 to 7") - dropping page 7 silently there was a real, tool-description-audited
-// false `resolved` (a citation partly fabricated reads as fully verified), not merely a
-// documented gap, so it is fixed rather than left as under-checking. Case-insensitive via
-// ci(), matching every other keyword in this grammar. This constant is shared with the
-// quoted-name page pattern too, so a quoted name's page range gets "to" support for free.
-const RANGE_SEP = String.raw`(?:-|–|[ \t]+${ci("to")}[ \t]+)`;
+// Accepts a hyphen or an en dash (each with OPTIONAL surrounding horizontal whitespace -
+// "5-7" and "5 - 7" both work, matching what "to" below already allowed; the inconsistency
+// was invisible in testing because only the tight forms were exercised, and a spaced dash
+// silently truncated the range to its first page, same false-`resolved` harm as the
+// untrimmed "to" gap), or the word "to" (surrounded by MANDATORY horizontal whitespace, so
+// it cannot glue to the digits either side - "5to7" is not a range). The en dash is what
+// most editors produce for "5-7" once autocorrect/smart-punctuation gets involved; "to" is
+// what an agent writing prose naturally produces ("pages 5 to 7") - dropping the second
+// page silently there was a real, tool-description-audited false `resolved` (a citation
+// partly fabricated reads as fully verified), not merely under-checking, so both are fixed
+// rather than left as documented gaps. Case-insensitive via ci(), matching every other
+// keyword in this grammar. This constant is shared with the quoted-name page pattern too,
+// so a quoted name's page range gets the same coverage for free.
+const RANGE_SEP = String.raw`(?:[ \t]*[-–][ \t]*|[ \t]+${ci("to")}[ \t]+)`;
 
 // Every bare (unquoted) document mention. Used both to emit doc-only citations and as one
 // source of anchors a node id can bind to (see the binding pass below).
@@ -177,10 +181,19 @@ const RE_DOC_PAGE = new RegExp(
   "g",
 );
 
+// Reuses DOC_PAGE_SEP and CLOSE_BRACKET verbatim - the exact bug this fixes was that this
+// function had its own copy of the separator ([,;]?[ \t]*) that silently fell out of sync
+// when RE_DOC_PAGE's was widened for brackets and connector words: quoting a name is
+// exactly what this grammar tells a caller to do for a real file name containing a space
+// (see the KNOWN, DELIBERATE LIMITATION comment on DOC_NAME_PATTERN above), so it was the
+// worst possible place for the two paths to drift - the recommended, spaces-safe form was
+// silently losing its page while the bare form worked. One shared definition, used by both
+// call sites, is what stops that drift from being reintroduced by a future change to only
+// one of them.
 function quotedPageFragment(delim: string): string {
   return (
     `${delim}([^${delim}]*[A-Za-z0-9_\\-]\\.${PDF_EXT})${delim}` +
-    `[,;]?[ \\t]*${PAGE_KEYWORD}[ \\t]*(${PAGE_NUMBER})(?:${RANGE_SEP}(${PAGE_NUMBER}))?`
+    `${DOC_PAGE_SEP}${PAGE_KEYWORD}[ \\t]*(${PAGE_NUMBER})(?:${RANGE_SEP}(${PAGE_NUMBER}))?${CLOSE_BRACKET}`
   );
 }
 
@@ -200,6 +213,22 @@ const RE_QUOTED_DOC_PAGE = new RegExp(QUOTE_DELIMITERS.map(quotedPageFragment).j
 // id's own text must never synthesize a document, which is exactly the failure mode
 // docs/spike-b-findings.md section 6 exists to prevent.
 const RE_NODE_ID = new RegExp(String.raw`${NODE_ID_KEYWORD}[:=]\s*([A-Za-z0-9_\-./]+)`, "gd");
+
+// A generic bracket-tag citation, e.g. "[node:some-doc-id-123]" or "[chunk:abc-42]" -
+// docs/spike-a-findings.md investigated a real consuming application and found that ALL of
+// its ~25 citing agent roles are instructed to cite in exactly this shape, with "node" as
+// the keyword, yet this grammar had no rule for it at all: not a partial or wrong match,
+// invisible to every pattern here, so such a citation never appeared in the tool's output
+// in any form - "silence reads as endorsement" (spike-a section on Shape 1). The keyword
+// itself is deliberately generic (`[A-Za-z]+`, not a hardcoded "node") per the spike's own
+// recommendation: that one application independently invented a second bracket-tag
+// convention ("Source:") for a different citation family, so a future host is likely to
+// invent a third word, and the keyword is never reported anywhere in the resulting
+// Citation - only the id is - so which word was used makes no difference to the verdict.
+// Colon may have horizontal whitespace on either side; the value stops at the closing `]`
+// or a newline, whichever comes first, so a stray unclosed "[" can never swallow unrelated
+// later text.
+const RE_BRACKET_TAG = /\[[A-Za-z]+[ \t]*:[ \t]*([^\]\n]+)\]/gd;
 
 // Sentence boundary, the concrete definition "same sentence" is built on: a run of .!?
 // followed by whitespace (or by end of string) is a boundary; a run of newlines always
@@ -303,24 +332,64 @@ function overlapsAny(start: number, end: number, spans: readonly Span[]): boolea
 
 export function extractCitations(text: string): Citation[] {
   const bounds = sentenceBoundaries(text);
+  const instances: Instance[] = [];
 
-  // Node ids first: their own matched span is a reserved span that later document scans
-  // must never read a citation out of (Important 6) - a node id like
-  // "node_id: sub/chapter.pdf" must not let "chapter.pdf" be discovered as a document.
+  // Identifier-like citations first (node_id: and the generic bracket tag): their own
+  // matched span is a reserved span that later document scans must never read a citation
+  // out of (Important 6) - "node_id: sub/chapter.pdf" must not let "chapter.pdf" be
+  // discovered as a document, and neither must "[node:report.pdf]".
   const nodeMentions: NodeMention[] = [];
-  const nodeIdSpans: Span[] = [];
+  const idSpans: Span[] = [];
   for (const m of text.matchAll(RE_NODE_ID)) {
     const start = m.index ?? 0;
     // `d` flag: exact span of the captured id group (group 1), not the whole
     // "node_id: ..." match - a document mentioned before the keyword must stay readable.
     const groupSpan = m.indices?.[1];
-    if (groupSpan) nodeIdSpans.push([groupSpan[0], groupSpan[1]]);
+    if (groupSpan) idSpans.push([groupSpan[0], groupSpan[1]]);
     const id = stripTrailingPunctuation(m[1]);
     // Nothing left after stripping (e.g. "node_id: ..."): not a citation. An empty id
     // must not become an empty nodeId, nor bind to (and thereby suppress) a real document
     // mention nearby.
     if (!id) continue;
     nodeMentions.push({ start, id });
+  }
+
+  // Generic bracket-tag citations ("[node:<id>]", "[chunk:<id>]", ...) - see RE_BRACKET_TAG
+  // above for why the keyword is generic and docs/spike-a-findings.md for why this exists
+  // at all. Deliberately does NOT feed into nodeMentions / the binding pass below: unlike
+  // node_id:, which names this grammar's own understanding of the backend's real
+  // per-document node ordinal (docs/spike-b-findings.md) and can therefore be meaningfully
+  // checked against a bound document's real node set, a bracket-tag id is a host-invented
+  // slug from a wholly different, unconfirmed id space. Binding it to a nearby document
+  // would let the resolver run a real per-document node check against an id that was never
+  // drawn from that space - risking the dangerous false `unresolved` direction (CLAUDE.md
+  // hard rule 4) for no benefit, since the spike found these ids never correspond to real
+  // backend node ids or file names either way. So every bracket tag emits its own
+  // stand-alone citation, unconditionally `docName: null`, regardless of what else is in
+  // the sentence. Canonical token deliberately reuses the exact "node_id:<id>" prefix an
+  // unbound node_id: citation already uses (not a new "bracket:<id>" shape) - both reduce
+  // to the identical Citation fields, and a consuming agent should not see two
+  // different-looking citations for what is, after verification, the same unverifiable
+  // claim; this also means an equivalent node_id: and bracket-tag citation for the same id
+  // dedupe into one, via the existing first-seen-by-token logic below.
+  for (const m of text.matchAll(RE_BRACKET_TAG)) {
+    const start = m.index ?? 0;
+    const groupSpan = m.indices?.[1];
+    if (groupSpan) idSpans.push([groupSpan[0], groupSpan[1]]);
+    const value = m[1].trim();
+    if (!value) continue; // e.g. "[node:]" - nothing to cite
+    // A URL-valued tag belongs to a different citation family entirely (spike-a Shape 3:
+    // "[Source: <url>]", the "web analogue of PageIndex node citations" for a role that
+    // cites external sources, not the document corpus). This tool verifies PageIndex
+    // documents only and must not attempt to resolve a web source. "://" is the simplest
+    // defensible signal: every URL scheme actually in use (http, https, even a bare
+    // "file://") includes it, an ordinary slug/id never does, and it needs no allowlist of
+    // schemes that could go stale as new ones appear.
+    if (value.includes("://")) continue;
+    instances.push({
+      index: start,
+      citation: { token: `node_id:${value}`, docName: null, pages: null, nodeId: value },
+    });
   }
 
   // Quoted document mentions - preferred over a bare match covering the same span, but
@@ -346,13 +415,13 @@ export function extractCitations(text: string): Citation[] {
     const end = start + m[0].length;
     const full = delimiterGroup(m, QUOTED_DOC_GROUP_STRIDE, 1);
     if (full === undefined || !isFileNameShaped(full)) continue; // not a name: ignore the quote entirely
-    if (overlapsAny(start, end, nodeIdSpans)) continue;
+    if (overlapsAny(start, end, idSpans)) continue;
     quotedSpans.push([start, end]);
     docMentions.push({ start, end, full, page: quotedPageByStart.get(start) ?? null });
   }
 
-  // Bare (unquoted) document mentions, excluding anything already claimed by a node id's
-  // own text or by a quoted name covering the same span.
+  // Bare (unquoted) document mentions, excluding anything already claimed by an
+  // identifier's own text or by a quoted name covering the same span.
   const pageByStart = new Map<number, { from: number; to: number }>();
   for (const m of text.matchAll(RE_DOC_PAGE)) {
     const from = Number(m[2]);
@@ -362,7 +431,7 @@ export function extractCitations(text: string): Citation[] {
   for (const m of text.matchAll(RE_DOC)) {
     const start = m.index ?? 0;
     const end = start + m[0].length;
-    if (overlapsAny(start, end, nodeIdSpans) || overlapsAny(start, end, quotedSpans)) continue;
+    if (overlapsAny(start, end, idSpans) || overlapsAny(start, end, quotedSpans)) continue;
     docMentions.push({ start, end, full: m[0], page: pageByStart.get(start) ?? null });
   }
 
@@ -377,7 +446,6 @@ export function extractCitations(text: string): Citation[] {
   // a node bind is not ALSO emitted as a separate bare/paged citation - the node-carrying
   // citation already names it, per the canonical-token rule above.
   const claimed = new Set<number>(); // DocMention.start values consumed by a node bind
-  const instances: Instance[] = [];
 
   for (const node of nodeMentions) {
     const sentence = sentenceIndexAt(bounds, node.start);

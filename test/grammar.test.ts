@@ -520,3 +520,136 @@ describe("extractCitations - page markers not glued to the name (tool-descriptio
     ]);
   });
 });
+
+describe("extractCitations - quoted-name page markers share the bare-name separator (spike/audit addition 1)", () => {
+  it("binds a page marker wrapped in parentheses to a quoted name", () => {
+    expect(extractCitations('See "Annual Report.pdf" (page 5) for details.')).toEqual([
+      {
+        token: "Annual Report.pdf#p5",
+        docName: "Annual Report.pdf",
+        pages: { from: 5, to: 5 },
+        nodeId: null,
+      },
+    ]);
+  });
+
+  it("binds a page marker introduced by the connector word 'on' to a quoted name", () => {
+    expect(extractCitations('See "Annual Report.pdf" on page 5.')).toEqual([
+      {
+        token: "Annual Report.pdf#p5",
+        docName: "Annual Report.pdf",
+        pages: { from: 5, to: 5 },
+        nodeId: null,
+      },
+    ]);
+  });
+
+  it("binds a page marker introduced by ', see' to a quoted name", () => {
+    expect(extractCitations('See "Annual Report.pdf", see page 5.')).toEqual([
+      {
+        token: "Annual Report.pdf#p5",
+        docName: "Annual Report.pdf",
+        pages: { from: 5, to: 5 },
+        nodeId: null,
+      },
+    ]);
+  });
+
+  it("still binds the tight adjacent form to a quoted name (regression)", () => {
+    expect(extractCitations('See "Annual Report.pdf", p.5 for details.')).toEqual([
+      {
+        token: "Annual Report.pdf#p5",
+        docName: "Annual Report.pdf",
+        pages: { from: 5, to: 5 },
+        nodeId: null,
+      },
+    ]);
+  });
+});
+
+describe("extractCitations - a dash range separator may carry surrounding horizontal whitespace (spike/audit addition 2)", () => {
+  it("accepts a hyphen with spaces around it", () => {
+    expect(extractCitations("See report.pdf pp. 5 - 7 for details.")).toEqual([
+      { token: "report.pdf#p5-7", docName: "report.pdf", pages: { from: 5, to: 7 }, nodeId: null },
+    ]);
+  });
+
+  it("accepts an en dash with spaces around it", () => {
+    expect(extractCitations("See report.pdf pp. 5 – 7 for details.")).toEqual([
+      { token: "report.pdf#p5-7", docName: "report.pdf", pages: { from: 5, to: 7 }, nodeId: null },
+    ]);
+  });
+
+  it("still accepts the tight hyphen form with no spaces (regression)", () => {
+    expect(extractCitations("See report.pdf pp.5-7 for details.")).toEqual([
+      { token: "report.pdf#p5-7", docName: "report.pdf", pages: { from: 5, to: 7 }, nodeId: null },
+    ]);
+  });
+
+  it("still accepts the tight en-dash form with no spaces (regression)", () => {
+    expect(extractCitations("See report.pdf pp.5–7 for details.")).toEqual([
+      { token: "report.pdf#p5-7", docName: "report.pdf", pages: { from: 5, to: 7 }, nodeId: null },
+    ]);
+  });
+});
+
+describe("extractCitations - generic bracket-tag citation (spike A addition 3)", () => {
+  it("recognizes a [node:<id>] bracket tag and routes it to unchecked (docName: null)", () => {
+    expect(extractCitations("See [node:some-doc-id-123] for details.")).toEqual([
+      { token: "node_id:some-doc-id-123", docName: null, pages: null, nodeId: "some-doc-id-123" },
+    ]);
+  });
+
+  it("keeps the keyword generic - a [<word>:<id>] shape is recognized, not only 'node'", () => {
+    expect(extractCitations("See [chunk:abc-42] for details.")).toEqual([
+      { token: "node_id:abc-42", docName: null, pages: null, nodeId: "abc-42" },
+    ]);
+  });
+
+  it("does not recognize a URL-valued tag - a different citation family this tool must not resolve", () => {
+    expect(extractCitations("See [Source: https://example.com/doc] for details.")).toEqual([]);
+  });
+
+  it("trims whitespace inside the brackets", () => {
+    expect(extractCitations("See [node: some-doc-id-123 ] for details.")).toEqual([
+      { token: "node_id:some-doc-id-123", docName: null, pages: null, nodeId: "some-doc-id-123" },
+    ]);
+  });
+
+  it("drops an empty bracket tag", () => {
+    expect(extractCitations("See [node:] for details.")).toEqual([]);
+  });
+
+  it("does not let a .pdf-shaped bracket-tag value synthesize a document", () => {
+    expect(extractCitations("See [node:report.pdf] for details.")).toEqual([
+      { token: "node_id:report.pdf", docName: null, pages: null, nodeId: "report.pdf" },
+    ]);
+  });
+
+  it("does NOT bind to a document named in the same sentence - always docName: null", () => {
+    // Deliberate divergence from node_id:, which DOES bind. Reasoning: node_id: is this
+    // grammar's own name for the backend's real per-document node ordinal
+    // (docs/spike-b-findings.md), so binding it to a document lets the resolver check it
+    // against that document's real node set. A bracket-tag id (docs/spike-a-findings.md)
+    // is a host-invented slug from a completely different, unconfirmed id space with no
+    // guaranteed relationship to the backend's node_id ordinals - binding it would let the
+    // resolver run a real per-document node check against an id that was never drawn from
+    // that space, risking exactly the dangerous false `unresolved` direction (CLAUDE.md
+    // hard rule 4) instead of the always-safe `unchecked` the spike itself recommends.
+    expect(extractCitations("See report.pdf and [node:some-doc-id-123] together.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+      { token: "node_id:some-doc-id-123", docName: null, pages: null, nodeId: "some-doc-id-123" },
+    ]);
+  });
+
+  it("dedupes with an equivalent node_id: citation sharing the same canonical token", () => {
+    // Canonical-token decision: a bracket tag renders to the SAME "node_id:<id>" prefix an
+    // unbound node_id: citation already uses, not a new "bracket:<id>" shape of its own -
+    // both reduce to the identical Citation fields (docName: null, nodeId: id), and a
+    // consuming agent should not see two different-looking citations for what is, after
+    // verification, the same unverifiable claim.
+    expect(extractCitations("See node_id: 0003 and [node:0003] together.")).toEqual([
+      { token: "node_id:0003", docName: null, pages: null, nodeId: "0003" },
+    ]);
+  });
+});
