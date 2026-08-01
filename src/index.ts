@@ -2,6 +2,7 @@
 // src/index.ts
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { describeStartupFailure, isUsableApiKey } from "./api-key.js";
+import { exitAfterStderr } from "./exit-after-stderr.js";
 import { PageindexHttpClient } from "./pageindex-client.js";
 import { createServer } from "./server.js";
 
@@ -46,8 +47,16 @@ async function main(): Promise<void> {
     // Only `err`'s name and a redacted rendering of its message are printed - never
     // the raw error object (whose enumerable properties, e.g. a `requestInit`, could
     // carry the key) and never a stack (which could quote the message verbatim).
-    console.error(`citation-verify-mcp failed to start: ${describeStartupFailure(err, apiKey)}`);
-    process.exitCode = 1;
+    //
+    // Deliberately `exitAfterStderr`, not `console.error` + `process.exitCode = 1` (as
+    // the missing-key branch above uses safely, since nothing has been constructed
+    // there) and not a bare `console.error` + `process.exit(1)` either: by this point
+    // `client` may already hold an open transport, which can keep the event loop
+    // alive, so "just set exitCode and return" can hang instead of exiting - and a bare
+    // `process.exit` right after the write risks truncating it, since stderr is a pipe
+    // under an MCP host. See src/exit-after-stderr.ts for why only write-then-exit gets
+    // both properties. Do not "simplify" this back into either bare form.
+    exitAfterStderr(`citation-verify-mcp failed to start: ${describeStartupFailure(err, apiKey)}`, 1);
   }
 }
 
@@ -55,9 +64,9 @@ main().catch((err) => {
   // Defense in depth only: everything that can throw with `apiKey` in scope is already
   // caught above, so nothing here should ever carry the key - there is no key in scope
   // to pass, hence the empty string, which makes `describeStartupFailure` a pure
-  // name+message rendering with no redaction to do. Kept in the same shape (never the
-  // raw object, never a stack) in case a future change adds a throw site between
-  // reading `apiKey` and entering that try block.
-  console.error(`citation-verify-mcp failed to start: ${describeStartupFailure(err, "")}`);
-  process.exitCode = 1;
+  // name+message rendering with no redaction to do. Still `exitAfterStderr`, for the
+  // same hang-vs-truncation reason as the inner catch: if this ever fires, a transport
+  // may already be open, in case a future change adds a throw site between reading
+  // `apiKey` and entering that try block.
+  exitAfterStderr(`citation-verify-mcp failed to start: ${describeStartupFailure(err, "")}`, 1);
 });
