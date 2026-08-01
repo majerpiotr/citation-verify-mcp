@@ -8,9 +8,14 @@ one resolves against PageIndex. Existence is verified by code calling the source
 truth - never by asking a model, because a model-based checker can hallucinate exactly
 like the one it checks.
 
-Authoritative documents, read both before starting work:
-- `docs/design.md` - the approved design (architecture, constraints, scope).
-- `docs/implementation-plan.md` - the task-by-task implementation plan.
+Authoritative documents, read before starting work, in this order:
+- `docs/spike-b-findings.md` - the OBSERVED behaviour of the backend, from probing the
+  live service. Ground truth; it supersedes any document that disagrees with it.
+- `docs/spike-a-findings.md` - what a real consuming application actually emits. Read it
+  before assuming the grammar is useful in practice.
+- `docs/design.md` - the approved design, since revised against those findings.
+- `docs/rework-plan.md` - the rework the findings forced. Supersedes
+  `docs/implementation-plan.md` (the original task-by-task plan) where they conflict.
 
 ## Hard rules
 
@@ -52,19 +57,47 @@ actual result; do not assert success from expectation.
 
 ## Current state
 
-- Git: branch `feature/citation-verify-core`, with commits. No remote.
-- Node v24 present (plan requires >= 20). Dependencies installed.
-- Tasks 1-6 are complete and reviewed: grammar, PageIndex client, resolver, MCP server
-  surface, binary entry point, plus the fixes from a whole-branch review. The unit suite
-  is fully offline - it builds against a fake `DocLookup`, so it needs no API key and no
-  network.
-- Task 7 (integration test) and Task 8 (README) have NOT been run, and neither spike has.
-  Spike A needs representative outputs from an external consuming system, which this repo
-  cannot produce. Spike B and Task 7 need a live API key and network, which the operator
-  withheld. Their checkboxes in `docs/implementation-plan.md` are deliberately unticked
-  and each carries a note recording why.
-- Consequence to respect: the `get_document` argument shape and the real
-  found-vs-not-found discriminator are still unconfirmed (Spike B). Do not guess at them.
+- Git: branch `feature/citation-verify-core`, ~50 commits, no remote, nothing merged.
+- Node v24 present (>= 20 required). Dependencies installed. TypeScript 7.
+- The unit suite is fully offline and green; it builds against fake `DocLookup` and
+  `ToolCaller` implementations, so it needs no API key and no network.
+- `test/integration.test.ts` is credential-gated and skips cleanly without env. It has
+  been RUN against the live backend and passes, including the outage invariant.
+- **Both spikes are DONE.** Their findings drove a rewrite of the client, the grammar,
+  the resolver and the tool description. Do not treat the original
+  `docs/implementation-plan.md` code blocks as current - several of them contain defects
+  that were found and fixed.
+
+Settled facts you must not re-derive or contradict:
+
+- The transport is an HTTP MCP endpoint, `https://api.pageindex.ai/mcp`, authenticated
+  with `Authorization: Bearer <key>`. There is NO child process. The published
+  `pageindex-mcp` package is OAuth-only and never reads `PAGEINDEX_API_KEY`.
+- The lookup argument is `doc_name` - a file name including its extension, matched
+  case-sensitively. `doc_id` is rejected.
+- A MISSING document arrives as `isError: true`, the same channel as a backend failure.
+  The only thing separating them is `errorCode: "NOT_FOUND"` in the parsed body.
+  `unresolved` requires that positive code; every other ambiguity throws and becomes
+  `unchecked`.
+- `node_id` identifies a node inside ONE document's tree, not a document. A bare node id
+  is unverifiable by construction and must be `unchecked`.
+- The key carries `remove_document` capability on the same connection. This server calls
+  only read tools.
+
+Known limits, deliberately carried (see `.superpowers/sdd/implementation-plan/progress.md`
+for the full ledger and every operator ruling):
+
+- Spike A found that in the one real consuming application investigated, the citation
+  format its agents were instructed to use appeared ZERO times in real output, and what
+  they did emit named nothing the backend could look up. `total: 0` on text full of
+  unverifiable claims is a routine outcome. Both the README and the tool description say
+  so; do not quietly soften that.
+- Grammar over-reach still produces a false `unresolved` on some non-citations, and
+  under-reach still misses some real ones. Each case is disclosed in the tool description
+  and the README. If you change the grammar, update both - they are pinned by assertions
+  in `test/server.test.ts`, which will fail if you do not.
+- No per-call timeout budget across a whole draft; the SDK's 60s per-request default is
+  the only bound. `PAGEINDEX_FOLDER_ID` is not implemented.
 
 ## Commands
 
