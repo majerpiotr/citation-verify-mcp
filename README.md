@@ -129,6 +129,15 @@ to any other extension (`.docx`, `.txt`, `.md`, ...) is not extracted at all.
 own lookup is case-sensitive, so a citation of `Report.PDF` will not match an existing
 `report.pdf`). The `.pdf` extension itself is matched case-insensitively.
 
+A bare match is skipped entirely - not `resolved`, not `unresolved`, not `unchecked` - when
+it is the path segment of a URL: a literal `://` appears earlier on the same line with no
+whitespace between it and the match (`https://example.com/whitepaper.pdf` is not read as a
+citation to `whitepaper.pdf`). This check is deliberately narrow: a scheme-relative URL
+(`//example.com/doc.pdf`) or a bare host with no scheme marker at all (`example.com/doc.pdf`)
+is **not** recognized as a URL and **is** still read as an ordinary document name - a
+legitimate external link written either of those two ways can therefore be checked against
+the corpus and come back `unresolved`.
+
 **Page.** Optionally follows a document - **bare or quoted alike**, the same rules apply
 to both - on the **same line**, with nothing else between them but a recognized
 separator:
@@ -146,20 +155,29 @@ separator:
   form written directly against its document counts.
 
 **Node.** `node_id: <id>` or `node_id=<id>` (keyword case-insensitive), in either order
-relative to the document and the page. It binds to the **nearest document mention in the
-same sentence** (a sentence never crosses a newline). A document with both a page and a
-node in the same sentence produces **one combined citation**
-(`<name>.pdf#p<N>&n<node-id>`), not two.
+relative to the document and the page. Unlike a page, a node has **no separator
+constraint at all**: it binds to the **nearest document mention anywhere in the same
+sentence** (a sentence never crosses a newline), regardless of what stands between them or
+which comes first. A document with both a page and a node in the same sentence produces
+**one combined citation** (`<name>.pdf#p<N>&n<node-id>`), not two. If a sentence names more
+than one document, "nearest" can bind the node to the wrong one - when that matters, put
+the node and the document it belongs to in a sentence of their own.
 
 **Bracket-tag identifier.** `[<word>: <id>]` - a square-bracketed keyword (any run of
 letters, chosen by whoever wrote the citation: `node`, `chunk`, `Source`, ...), a colon
 (optional surrounding spaces), an id running up to the closing `]` or a newline, and a
-literal closing `]`. Examples: `[node:some-doc-id-123]`, `[chunk: abc-42]`. This shape is
-always reported **`unchecked`** and never binds to a nearby document - its id space has
-no defined relationship to the backend's per-document node ordinals, so cite the real
-`<name>.pdf` (optionally with a page or `node_id:`) to get an actual verdict. A tag whose
-value contains `://` (a URL) is excluded entirely and is not treated as a citation of any
-kind.
+literal closing `]`. Examples: `[node:some-doc-id-123]`, `[chunk: abc-42]`.
+
+The value is reported **`unchecked`** and never bound to any document outside the
+brackets - its id space has no defined relationship to the backend's per-document node
+ordinals - **unless the value itself contains a recognizable `<name>.pdf`**. When it does,
+that real document (and any page or node cited alongside it inside the same brackets, e.g.
+`[Source: report.pdf p.5]`) is extracted and checked exactly as it would be in ordinary
+prose, not swallowed into one opaque `unchecked` citation. Only a value that is not
+document-shaped (an invented slug like `some-doc-id-123`) stays `unchecked`; cite the real
+`<name>.pdf` (optionally with a page or `node_id:`) to get an actual verdict for that
+citation. A tag whose value contains `://` (a URL) is excluded entirely and is not treated
+as a citation of any kind, even when the URL's own path segment looks document-shaped.
 
 **A bare `node_id: <id>` with no document anywhere in the same sentence is `unchecked`,
 never `unresolved`.** Node numbering is per-document - every document has a node
@@ -172,18 +190,40 @@ backticks to be read exactly: `"Annual Report.pdf"`. A quoted name is honoured v
 only when it is genuinely file-name-shaped:
 - at most 4 space-separated words,
 - at most 80 characters,
-- no apostrophe, `&`, comma, colon, or non-ASCII character.
+- letters, digits, spaces, dots, underscores, and hyphens only (the same allowed set as an
+  unquoted name, minus the space restriction).
 
-A name that fails that shape check - and any **unquoted** name containing a space - falls
-back to being read as its **last space-free segment**: `Annual Report 2024.pdf` is read as
-`2024.pdf`, a different document. This never produces a false `resolved` (the wrong,
-truncated name simply resolves or fails to resolve on its own merits), but a real citation
-to a space-bearing name goes unverified unless it is quoted and shape-valid - check
-`title` on a `resolved` verdict to catch a truncated match that happened to resolve to
-something else.
+**Quoting does not rescue a name containing any other character** - an apostrophe, `&`,
+comma, colon, parenthesis, non-ASCII letter, and so on. A rejected quoted name falls
+through to be matched exactly like an unquoted one, and the measured result is not one
+single, predictable fallback:
+- It can be **dropped entirely**: `Report (final).pdf` (quoted or not) matches nothing at
+  all, because the parenthesis breaks the allowed-character run on both sides, and a real
+  citation that was the only one in the text reports `total: 0`.
+- It can be **read as a fragment that is not the last space-free segment**:
+  `"Rapport Financiér.pdf"` is read as `r.pdf`, not `Financiér.pdf` - the allowed-character
+  run is cut at the accented letter, wherever that happens to fall, not at the nearest
+  space. Only when the disallowed character happens to sit exactly at a word boundary does
+  the result look like "the last word": `"Report, Final.pdf"` happens to read as
+  `Final.pdf`, but that is a coincidence of where the comma fell, not a rule to rely on.
+
+Neither outcome produces a false `resolved` on its own (the wrong fragment resolves or
+fails to resolve on its own merits), but a real citation to such a name can go silently
+unverified with no trace in `details` (the drop case) or get checked against a wrong,
+often unrecognizable document (the fragment case) - check `title` on a `resolved` verdict,
+and `total` for an unexpected drop, to catch either.
 
 Single quotes are **not** a delimiter, deliberately - ordinary apostrophes in prose
 ("don't", "the team's") would otherwise be misread as opening a document name.
+
+**Inline code is not exempt.** A backtick- or double-quote-delimited span of at most 4
+words ending in `.pdf` is read as a document name by the same rule that recognizes a
+quoted name with spaces - including inside what is clearly a code span, not prose:
+`` `cat report.pdf` `` and `` `pdftotext big-report.pdf` `` are read as the document names
+`cat report.pdf` and `pdftotext big-report.pdf`. Neither exists in a real corpus, so a
+harmless shell example in a draft can report `unresolved` and be flagged for removal or
+replacement like a fabricated citation. This is an accepted trade-off, not a bug: the same
+delimiter rule is what makes a real space-bearing file name checkable at all.
 
 **Not recognized:**
 - Any document extension other than `.pdf`.
@@ -195,13 +235,17 @@ Single quotes are **not** a delimiter, deliberately - ordinary apostrophes in pr
   en dash, or "to" - such a range is not dropped, but truncated to its first page only
   (see the "Page" bullet above).
 - A document name with spaces, unquoted, or quoted but failing the file-name shape check
-  (more than 4 words, over 80 characters, or carrying an apostrophe/`&`/comma/colon/
-  non-ASCII character) - both fall back to a truncated, effectively-different citation
-  rather than being dropped.
+  (more than 4 words, over 80 characters, or containing a character outside
+  letters/digits/spaces/dots/underscores/hyphens) - both fall back to being dropped
+  entirely or read as a shorter, not-necessarily-last fragment; see "Quoted names" above.
 - A single-quoted name (`'report.pdf'`).
-- A bare `node_id` with no document in its sentence, or a bracket tag - both are
-  extracted, but always `unchecked`.
+- A bare `node_id` with no document in its sentence, or a bracket tag whose value is not
+  itself document-shaped - both are extracted, but always `unchecked`.
 - A bracket-tag value containing `://` (a URL) - not treated as a citation at all.
+- A bare document match that is a URL's own path segment (preceded on the same line by
+  `://` with no whitespace in between) - not extracted at all, in any status. A
+  scheme-relative or bare-host URL is not covered by this and is still read as a document
+  name; see "Document" above.
 
 ## What is and is not verified
 
@@ -321,8 +365,12 @@ npx vitest run test/integration.test.ts
   without corpus evidence of what real agents actually write. They may need revisiting
   once more real output is available.
 - Only `.pdf` documents are recognized; there is no support for any other extension.
-- An unquoted or shape-rejected document name containing a space is read as its last
-  space-free segment, not as the real name - see "Quoted names" above.
+- An unquoted or shape-rejected document name containing a space is not reliably read as
+  its last space-free segment - it may be dropped entirely or read as a shorter fragment
+  cut at the first disallowed character, wherever that falls - see "Quoted names" above.
+- A quoted or backtick-delimited span of at most 4 words ending in `.pdf` is read as a
+  document name even inside inline code, so a harmless shell example naming an unrelated
+  `.pdf`-like word can be flagged `unresolved` - see "Quoted names" above.
 - `PAGEINDEX_FOLDER_ID` is **not implemented**. Nothing in this server scopes a lookup to
   a folder; every document lookup resolves against the account's whole corpus. If two
   documents in the same account share a file name, existence still answers correctly, but

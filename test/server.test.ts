@@ -245,12 +245,48 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(/inside `\(\)`\/`\[\]`/);
     expect(description).toMatch(/on the SAME LINE, with no other document name in between/i);
 
-    // --- NEW: the bracket-tag citation shape (docs/spike-a-findings.md) - always
-    // `unchecked`, never bound to a nearby document, and a URL value is excluded entirely ---
+    // --- final-fix Fix 1: node binding is NOT governed by the page separator rule above -
+    // a node binds to the nearest document mention anywhere in the SAME SENTENCE, either
+    // order, with no separator constraint at all. Pinned as one conjunction (not "nearest"
+    // and "no separator constraint" separately) so a rewording that keeps one true fragment
+    // while reintroducing a same-line-only or separator requirement still fails. The
+    // practical-advice half (separate sentences when the nearest mention is wrong) is
+    // pinned on its own, since a rewording could state the rule correctly but drop the
+    // guidance that makes it actionable. ---
     expect(description).toMatch(
-      /`\[node:<id>\]` or `\[<word>:<id>\]` - is recognized too, but always `unchecked`/,
+      /`node_id: <id>`? or `?node_id=<id>`? binds instead to the NEAREST document mention anywhere in the SAME SENTENCE, either order, with no separator constraint at all/i,
     );
-    expect(description).toMatch(/it never binds to a nearby document \(its id space is unconfirmed\)/i);
+    expect(description).toMatch(/if the nearest is the wrong one, use separate sentences/i);
+
+    // --- final-fix Fix 4a: a bare match that is a URL's own path segment is invisible
+    // (commit 776cfdc) - pinned together with "not resolved, unresolved, or unchecked" so a
+    // rewording can't silently reclassify it as one of the three real statuses. The
+    // deliberately-uncovered scheme-relative/bare-host half is pinned separately and
+    // positively (the exact examples), since THAT half is what still produces a false
+    // `unresolved` and is the one a consuming agent most needs to see. ---
+    expect(description).toMatch(
+      /A bare match after a same-line `:\/\/` with no whitespace in between is invisible - not resolved, unresolved, or unchecked/i,
+    );
+    expect(description).toMatch(
+      /scheme-relative \(`\/\/host\/doc\.pdf`\) and bare-host \(`host\/doc\.pdf`\) forms are NOT covered and are still read as document names, risking a false `unresolved`/i,
+    );
+
+    // --- final-fix Fix 4b: a bracket-tag value is no longer unconditionally `unchecked`
+    // (commit 776cfdc) - a document-shaped value is extracted and checked like prose,
+    // including any page/node cited alongside it in the same brackets. Pinned as three
+    // pieces: the conditional trigger, the extraction consequence (page/node included -
+    // this is the part that actually changed), and the non-document-shaped fallback -
+    // dropping any one of the three would silently reintroduce the old, now-false
+    // "always unchecked" claim. ---
+    expect(description).toMatch(
+      /`\[node:<id>\]` or `\[<word>:<id>\]` - is `unchecked` UNLESS its value names a real `<name>\.pdf`/,
+    );
+    expect(description).toMatch(
+      /then that document \(and any page\/node cited alongside it\) is checked as in prose/i,
+    );
+    expect(description).toMatch(
+      /otherwise it stays a standalone `unchecked` id, never bound to any document \(id space unconfirmed\)/i,
+    );
     expect(description).toMatch(/cite the real `<name>\.pdf` for a verdict/i);
     expect(description).toMatch(/A URL-valued tag \(`\[Source: https:\/\/\.\.\.\]`\) is not a citation at all/);
 
@@ -267,17 +303,26 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(
       /file-name-shaped \(at most 4 words, 80 characters, letters\/digits\/spaces\/dots\/underscores\/hyphens only\)/i,
     );
-    // The "otherwise" bridge - without it, the fallback-to-last-segment behavior has no
-    // stated trigger.
-    expect(description).toMatch(
-      /Otherwise - including a rejected quoted name - only its last space-free segment is read:/,
-    );
     expect(description).toMatch(/Single quotes are NOT a delimiter/i);
 
-    // --- Important 6: a rejected/space-bearing name is silently checked as A DIFFERENT
-    // document, not merely left unverified - and `title` is the way to catch it ---
-    expect(description).toMatch(/silently checked AS `?Report\.pdf`?, a DIFFERENT document/);
+    // --- final-fix Fix 2: the fallback for a name with a disallowed character (quoted or
+    // not) is NOT reliably "last space-free segment" - measured behavior showed it can also
+    // be dropped entirely (`total: 0`) or truncated mid-word into a fragment that is not the
+    // last segment, and quoting does not rescue a name with such a character. Pinned as one
+    // conjunction covering "quoting does not rescue", "drop the match entirely", AND
+    // "not-necessarily-last fragment" together, so a rewording that restores only the old
+    // (false) "last segment" guarantee still fails even if it keeps the other true pieces. ---
+    expect(description).toMatch(
+      /quoting does not rescue any other character, which may instead drop the match entirely \(`total: 0`\) or leave a shorter, not-necessarily-last fragment read as a DIFFERENT document/i,
+    );
     expect(description).toMatch(/check `?title`? on a `?resolved`? verdict to catch this/i);
+
+    // --- final-fix Fix 3: the previously-undisclosed trade-off that a quoted/backtick span
+    // is read as a document name even inside inline code, so a code example naming an
+    // unrelated file can wrongly report `unresolved`. ---
+    expect(description).toMatch(
+      /A quoted span of up to 4 words ending in `\.pdf` is read as a document name even inside inline code, so a shell example can report `unresolved`/i,
+    );
 
     // --- bare node_id rule - the trigger condition ("with no document in the same
     // sentence") is pinned together with the verdict, not just the verdict half ---
