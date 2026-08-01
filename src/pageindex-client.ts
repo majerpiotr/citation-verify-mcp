@@ -259,6 +259,22 @@ export async function accumulateNodeIds(
   );
 }
 
+// PURE. Requires an https origin for the PageIndex backend, unless the host is
+// loopback (localhost or 127.0.0.1) - a legitimate plain-HTTP case for local
+// development. Guards the Authorization bearer token from ever being sent in
+// plaintext over a non-loopback link. Throws rather than returning a boolean so a
+// caller cannot forget to check the result. The thrown message names the rejected
+// origin, which is diagnostic and never a secret - the API key is never part of the
+// base URL.
+export function assertSecureBaseUrl(url: URL): void {
+  if (url.protocol === "https:") return;
+  const isLoopback = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol === "http:" && isLoopback) return;
+  throw new Error(
+    `PAGEINDEX_BASE_URL must use https: (plain http: is only allowed for localhost or 127.0.0.1), got ${url.protocol}//${url.host}`,
+  );
+}
+
 // Concrete client. Connects to the PageIndex HTTP MCP endpoint and dispatches
 // get_document / get_document_structure. Network glue - exercised by
 // test/integration.test.ts, not the unit suite (docs/spike-b-findings.md section 1).
@@ -268,7 +284,9 @@ export class PageindexHttpClient implements DocLookup {
   static async connect(apiKey: string): Promise<PageindexHttpClient> {
     // Overridable for a self-hosted backend (docs/design.md section 6).
     const baseUrl = process.env["PAGEINDEX_BASE_URL"] ?? DEFAULT_BASE_URL;
-    const transport = new StreamableHTTPClientTransport(new URL(baseUrl), {
+    const url = new URL(baseUrl);
+    assertSecureBaseUrl(url);
+    const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers: { Authorization: `Bearer ${apiKey}` } },
     });
     const client = new Client({ name: "citation-verify", version: "0.0.1" });

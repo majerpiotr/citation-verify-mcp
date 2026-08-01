@@ -5,6 +5,7 @@ import {
   collectNodeIds,
   shouldFetchNextStructurePart,
   accumulateNodeIds,
+  assertSecureBaseUrl,
 } from "../src/pageindex-client.js";
 
 // Builds a minimal CallToolResult-shaped envelope: a single text content block whose
@@ -392,5 +393,31 @@ describe("accumulateNodeIds", () => {
     const fetchPart = async () =>
       structureResult({ error: "PageIndex API returned 503", structure: [] }, true);
     await expect(accumulateNodeIds("some-doc.pdf", fetchPart)).rejects.toThrow();
+  });
+});
+
+describe("assertSecureBaseUrl", () => {
+  it("accepts the default https origin", () => {
+    expect(() => assertSecureBaseUrl(new URL("https://api.pageindex.ai/mcp"))).not.toThrow();
+  });
+
+  it("accepts plain http on localhost", () => {
+    expect(() => assertSecureBaseUrl(new URL("http://localhost:3000/mcp"))).not.toThrow();
+  });
+
+  it("accepts plain http on 127.0.0.1", () => {
+    expect(() => assertSecureBaseUrl(new URL("http://127.0.0.1:3000/mcp"))).not.toThrow();
+  });
+
+  it("accepts https on a non-loopback host", () => {
+    expect(() => assertSecureBaseUrl(new URL("https://self-hosted.example.com/mcp"))).not.toThrow();
+  });
+
+  it("rejects plain http on a non-loopback host, so the bearer token can't go out in plaintext", () => {
+    expect(() => assertSecureBaseUrl(new URL("http://api.pageindex.ai/mcp"))).toThrow(/https/);
+  });
+
+  it("rejects a non-http(s) scheme", () => {
+    expect(() => assertSecureBaseUrl(new URL("ftp://api.pageindex.ai/mcp"))).toThrow(/https/);
   });
 });

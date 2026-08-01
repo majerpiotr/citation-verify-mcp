@@ -2,13 +2,15 @@
   "name": "citation-verify-mcp",
   "version": "0.0.1",
   "description": "MCP server that verifies whether agent citations resolve against PageIndex",
+  "license": "MIT",
   "type": "module",
   "bin": { "citation-verify-mcp": "dist/index.js" },
   "files": ["dist"],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "prepublishOnly": "npm run build"
   },
   "engines": { "node": ">=20" },
   "dependencies": {
