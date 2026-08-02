@@ -20,12 +20,51 @@ function fakeWriter(): { writer: StderrWriter; callbacks: (() => void)[] } {
 }
 
 describe("exitAfterStderr", () => {
+  // The exit-code floor is written through an injected sink so no test can set the
+  // vitest runner's own `process.exitCode` and make a green run report failure. This
+  // afterEach is the belt to that braces: it restores whatever the runner's exit code
+  // was before this file ran, in case a future test forgets to inject the sink.
+  const runnerExitCode = process.exitCode;
+  const noopExitCode = (): void => {};
+
   beforeEach(() => {
     vi.useFakeTimers();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    process.exitCode = runnerExitCode;
+  });
+
+  // The safety timer is `unref`'d, so if the write's callback is swallowed AND nothing
+  // else refs the event loop, the loop drains and the process exits on its own - with
+  // whatever `process.exitCode` holds, which is 0 unless something set it. That would
+  // report a clean success to the MCP host on a startup failure. Setting the floor
+  // before the write closes it; both normal paths still call `exit(code)` explicitly.
+  it("sets the exit code floor before writing, so a swallowed callback cannot exit 0", () => {
+    const events: string[] = [];
+    const writer: StderrWriter = {
+      write() {
+        events.push("write"); // callback deliberately swallowed
+      },
+    };
+
+    exitAfterStderr("boom", 1, {
+      writer,
+      exit: () => events.push("exit"),
+      setExitCode: (code) => events.push(`exitCode=${code}`),
+    });
+
+    expect(events).toEqual(["exitCode=1", "write"]);
+  });
+
+  it("defaults the floor to the real process exit code", () => {
+    const { writer } = fakeWriter();
+
+    exitAfterStderr("boom", 3, { writer, exit: () => {} });
+
+    expect(process.exitCode).toBe(3);
+    process.exitCode = runnerExitCode;
   });
 
   it("writes the message with a trailing newline", () => {
@@ -38,7 +77,7 @@ describe("exitAfterStderr", () => {
     };
     const exit = vi.fn();
 
-    exitAfterStderr("boom", 1, { writer, exit });
+    exitAfterStderr("boom", 1, { writer, exit, setExitCode: noopExitCode });
 
     expect(written).toEqual(["boom\n"]);
   });
@@ -47,7 +86,7 @@ describe("exitAfterStderr", () => {
     const { writer, callbacks } = fakeWriter();
     const exit = vi.fn();
 
-    exitAfterStderr("boom", 1, { writer, exit });
+    exitAfterStderr("boom", 1, { writer, exit, setExitCode: noopExitCode });
 
     expect(exit).not.toHaveBeenCalled();
     callbacks[0]?.();
@@ -59,7 +98,7 @@ describe("exitAfterStderr", () => {
     const { writer } = fakeWriter(); // callback captured but never invoked
     const exit = vi.fn();
 
-    exitAfterStderr("boom", 1, { writer, exit, timeoutMs: 2000 });
+    exitAfterStderr("boom", 1, { writer, exit, timeoutMs: 2000, setExitCode: noopExitCode });
 
     expect(exit).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1999);
@@ -73,7 +112,7 @@ describe("exitAfterStderr", () => {
     const { writer, callbacks } = fakeWriter();
     const exit = vi.fn();
 
-    exitAfterStderr("boom", 1, { writer, exit, timeoutMs: 2000 });
+    exitAfterStderr("boom", 1, { writer, exit, timeoutMs: 2000, setExitCode: noopExitCode });
 
     callbacks[0]?.();
     vi.advanceTimersByTime(2000);
@@ -85,7 +124,7 @@ describe("exitAfterStderr", () => {
     const { writer, callbacks } = fakeWriter();
     const exit = vi.fn();
 
-    exitAfterStderr("boom", 1, { writer, exit, timeoutMs: 2000 });
+    exitAfterStderr("boom", 1, { writer, exit, timeoutMs: 2000, setExitCode: noopExitCode });
 
     vi.advanceTimersByTime(2000);
     expect(exit).toHaveBeenCalledTimes(1);
@@ -111,11 +150,24 @@ describe("exitAfterStderr", () => {
       return capturedTimer;
     });
 
-    exitAfterStderr("boom", 1, { writer, exit, timeoutMs: 60_000 });
+    try {
+      exitAfterStderr("boom", 1, { writer, exit, timeoutMs: 60_000, setExitCode: noopExitCode });
 
-    expect(capturedTimer?.hasRef()).toBe(false);
+      expect(capturedTimer?.hasRef()).toBe(false);
+    } finally {
+      // Unconditional: vitest.config.ts does not set `restoreMocks`, so restoring only
+      // on the success path would leave the global `setTimeout` spy - and a live 60 s
+      // timer - installed for the rest of the run whenever the assertion above fails.
+      setTimeoutSpy.mockRestore();
+      clearTimeout(capturedTimer);
+    }
+  });
 
-    setTimeoutSpy.mockRestore();
-    clearTimeout(capturedTimer);
+  // Companion to the case above: proves the restore really is unconditional, by failing
+  // if a previous test left a spy on the global. Without the try/finally, a failure in
+  // that test takes this one down with it.
+  it("leaves the global setTimeout unspied for the rest of the run", () => {
+    vi.useRealTimers();
+    expect(vi.isMockFunction(globalThis.setTimeout)).toBe(false);
   });
 });

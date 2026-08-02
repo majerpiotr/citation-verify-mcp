@@ -1,5 +1,6 @@
 // test/pageindex-client.test.ts
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { redactSecret } from "../src/api-key.js";
 import {
   interpretGetDocument,
   collectNodeIds,
@@ -420,6 +421,100 @@ describe("assertSecureBaseUrl", () => {
 
   it("rejects a non-http(s) scheme", () => {
     expect(() => assertSecureBaseUrl(new URL("ftp://api.pageindex.ai/mcp"))).toThrow(/https/);
+  });
+
+  // A local development backend bound to ::1 (increasingly the default) is loopback and
+  // must be reachable over plain http, like its IPv4 twin. WHATWG URL normalizes any
+  // spelling of the IPv6 loopback address to the compressed bracketed form, so an exact
+  // match on "[::1]" covers "[0:0:0:0:0:0:0:1]" too without widening the exception.
+  it("accepts plain http on the IPv6 loopback address", () => {
+    expect(() => assertSecureBaseUrl(new URL("http://[::1]:3000/mcp"))).not.toThrow();
+  });
+
+  it("accepts plain http on the uncompressed spelling of IPv6 loopback", () => {
+    expect(() => assertSecureBaseUrl(new URL("http://[0:0:0:0:0:0:0:1]:3000/mcp"))).not.toThrow();
+  });
+
+  // Re-verification of the bypass attempts a previous review confirmed the guard
+  // survives, pinned here so the IPv6 addition above cannot quietly widen the exception.
+  // Each entry is [url, must be accepted]. The accepted plain-http ones are genuinely
+  // loopback (127.1 and 0x7f.1 both normalize to 127.0.0.1; "evil.com@localhost" is
+  // userinfo, and the host really is localhost).
+  it("still rejects every non-loopback form that looks loopback", () => {
+    const cases: Array<[string, boolean]> = [
+      ["HTTP://LOCALHOST:3000/mcp", true],
+      ["http://127.1:3000/mcp", true],
+      ["http://0x7f.1:3000/mcp", true],
+      ["http://evil.com@localhost:3000/mcp", true],
+      ["http://localhost.evil.com/mcp", false],
+      ["http://localhost@evil.com/mcp", false],
+      ["http://127.0.0.2:3000/mcp", false],
+      ["http://[::ffff:127.0.0.1]:3000/mcp", false],
+      ["http://[::2]:3000/mcp", false],
+      ["http://127.0.0.1.evil.com/mcp", false],
+      ["http://xn--localhost-/mcp", false],
+      ["ftp://localhost:3000/mcp", false],
+    ];
+    const accepted = cases.filter(([url]) => {
+      try {
+        assertSecureBaseUrl(new URL(url));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    expect(accepted.map(([url]) => url)).toEqual(cases.filter(([, ok]) => ok).map(([url]) => url));
+  });
+});
+
+// `connect` is the one function that interpolates the API key into an Authorization
+// header, and it is called directly with a LIVE key by test/integration.test.ts. Without
+// a guard of its own, a key carrying an embedded control character (a wrapped paste, a
+// two-line key file) reaches undici, which quotes the whole invalid header value -
+// key included - in a TypeError that a test runner or an MCP host then prints. The guard
+// in src/index.ts does not cover this: it protects one of `connect`'s callers, not
+// `connect`, which is exported and reachable by embedders too.
+describe("PageindexHttpClient.connect key guard", () => {
+  // Fabricated, never derived from any real key.
+  const UNUSABLE_KEY = "pi-FAKE-ONE-aaaa\npi-FAKE-TWO-bbbb";
+  const USABLE_FAKE_KEY = "pi-FAKE-USABLE-cccc";
+
+  // Reports the outcome as data that is safe to print: a boolean for "did the message
+  // quote the key", plus a copy of the message with the key redacted out of it. Nothing
+  // that could carry the key verbatim ever reaches `expect`, so a failure here cannot
+  // become the very leak this block is about.
+  async function connectOutcome(apiKey: string): Promise<{ quotedKey: boolean; message: string }> {
+    try {
+      await PageindexHttpClient.connect(apiKey);
+      return { quotedKey: false, message: "<connect resolved without throwing>" };
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      return { quotedKey: raw.includes(apiKey), message: redactSecret(raw, apiKey) };
+    }
+  }
+
+  // Points every case in this block at a closed loopback port, so a `connect` that got
+  // past the guard fails locally instead of reaching out to the real backend.
+  const originalBaseUrl = process.env["PAGEINDEX_BASE_URL"];
+  beforeEach(() => {
+    process.env["PAGEINDEX_BASE_URL"] = "http://127.0.0.1:1/mcp";
+  });
+  afterEach(() => {
+    if (originalBaseUrl === undefined) delete process.env["PAGEINDEX_BASE_URL"];
+    else process.env["PAGEINDEX_BASE_URL"] = originalBaseUrl;
+  });
+
+  it("refuses a key with an embedded control character before it can reach a header", async () => {
+    const outcome = await connectOutcome(UNUSABLE_KEY);
+    expect(outcome.quotedKey).toBe(false);
+    expect(outcome.message).toMatch(/API key is unusable/);
+    expect(outcome.message).toMatch(/value is not shown/);
+  });
+
+  it("does not refuse an otherwise usable key - it fails on the connection instead", async () => {
+    const outcome = await connectOutcome(USABLE_FAKE_KEY);
+    expect(outcome.quotedKey).toBe(false);
+    expect(outcome.message).not.toMatch(/API key is unusable/);
   });
 });
 

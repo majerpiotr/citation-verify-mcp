@@ -7,12 +7,17 @@ import { PageindexHttpClient } from "./pageindex-client.js";
 import { createServer } from "./server.js";
 
 async function main(): Promise<void> {
-  // Trim at the read site, not only in the guard: a key with a trailing newline would
-  // otherwise pass validation and then fail auth on every lookup.
+  // Trim at the read site: `isUsableApiKey` judges the value AS GIVEN, so an env value
+  // with a trailing newline (`PAGEINDEX_API_KEY=$(cat somefile)` style wiring) has to be
+  // normalized here, before it is asked about and before it is passed on. Trimming here
+  // rather than inside the guard is also what keeps the value that gets validated and
+  // the value that reaches the Authorization header the same one.
   const apiKey = process.env.PAGEINDEX_API_KEY?.trim();
   // `!apiKey` narrows out `undefined`/`""` for the compiler; `isUsableApiKey` covers
   // the rest (whitespace-only, unsubstituted shell placeholders, doc-style
-  // placeholders). Both must hold for `apiKey` to be usable below.
+  // placeholders, embedded control characters). Both must hold for `apiKey` to be
+  // usable below. `PageindexHttpClient.connect` re-checks it as a defence in depth -
+  // this branch exists to give the operator a clear message, not to be the only guard.
   if (!apiKey || !isUsableApiKey(apiKey)) {
     console.error(
       "PAGEINDEX_API_KEY is missing, empty, or looks like a placeholder value. " +

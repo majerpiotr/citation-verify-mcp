@@ -14,13 +14,22 @@ describe("isUsableApiKey", () => {
     expect(isUsableApiKey("   \t\n  ")).toBe(false);
   });
 
-  it("accepts a key that is only usable after trimming a trailing newline", () => {
-    // e.g. PAGEINDEX_API_KEY=$(cat somefile) style wiring
-    expect(isUsableApiKey("sk-live-abc123XYZ\n")).toBe(true);
+  // The verdict must be about the value it was GIVEN, not about a trimmed copy the
+  // caller never sees. The natural reading of the API - `if (isUsableApiKey(raw))
+  // connect(raw)` - must not be able to put a value into a header that is illegal
+  // there. A caller that wants the trailing-newline form (`PAGEINDEX_API_KEY=$(cat
+  // somefile)` style wiring) must trim at the read site, as src/index.ts does, and ask
+  // about the trimmed value.
+  it("rejects a key with a trailing newline, because that value is not usable as given", () => {
+    expect(isUsableApiKey("sk-live-abc123XYZ\n")).toBe(false);
   });
 
-  it("accepts a key surrounded by incidental whitespace", () => {
-    expect(isUsableApiKey("  sk-live-abc123XYZ  ")).toBe(true);
+  it("accepts the same key once the caller has trimmed it", () => {
+    expect(isUsableApiKey("sk-live-abc123XYZ\n".trim())).toBe(true);
+  });
+
+  it("rejects a key surrounded by incidental whitespace, which would be sent verbatim", () => {
+    expect(isUsableApiKey("  sk-live-abc123XYZ  ")).toBe(false);
   });
 
   it("rejects an unsubstituted shell placeholder", () => {
@@ -78,7 +87,45 @@ describe("isUsableApiKey", () => {
   it("still accepts an ordinary key with no control characters", () => {
     expect(isUsableApiKey("pi-live-abcXYZ123def456")).toBe(true);
   });
+
+  // The whole contract in one case: every value this predicate calls usable must be
+  // legal to interpolate into an HTTP header value verbatim. Guards against a future
+  // edit reintroducing a "normalize first, answer about the normalized copy" check.
+  it("calls usable only values that are legal in a header value as given", () => {
+    const candidates = [
+      "pi-live-abcXYZ123def456",
+      "pi-live-abc\nXYZ123def456",
+      "pi-live-abc\rXYZ123def456",
+      "pi-live-abc\tXYZ123def456",
+      "pi-live-abc\x00XYZ123def456",
+      "  pi-live-abcXYZ123def456  ",
+      "pi-live-abcXYZ123def456\n",
+      "\npi-live-abcXYZ123def456",
+    ];
+    for (const candidate of candidates) {
+      if (!isUsableApiKey(candidate)) continue;
+      // Fabricated values only; `index` and the boolean are all that can print here.
+      expect({ index: candidates.indexOf(candidate), legal: isLegalHeaderValue(candidate) }).toEqual({
+        index: candidates.indexOf(candidate),
+        legal: true,
+      });
+    }
+  });
 });
+
+// Independent oracle for "would undici accept this as a header value": builds the real
+// header the client builds and reports success as a boolean. Never returns, throws or
+// prints the candidate, so a failure in the test above cannot put a key in the output.
+function isLegalHeaderValue(candidate: string): boolean {
+  try {
+    const headers = new Headers({ Authorization: `Bearer ${candidate}` });
+    // A value with surrounding whitespace is legal but silently normalized, so it is
+    // NOT usable as given - what would be sent differs from what was passed in.
+    return headers.get("Authorization") === `Bearer ${candidate}`;
+  } catch {
+    return false;
+  }
+}
 
 describe("redactSecret", () => {
   it("replaces every occurrence of the secret with a fixed marker", () => {
@@ -115,5 +162,54 @@ describe("describeStartupFailure", () => {
 
   it("renders a non-Error thrown value without the raw object", () => {
     expect(describeStartupFailure("boom", "pi-FAKE-SECRET")).toBe("Error: boom");
+  });
+
+  // undici puts the entire actionable signal (bad host, refused connection, self-signed
+  // certificate) in `cause`; the outer error is always the same "fetch failed". Dropping
+  // the chain made every network/TLS/proxy misconfiguration render as one useless line.
+  it("includes the cause chain so a network or TLS failure stays diagnosable", () => {
+    const err = new TypeError("fetch failed", {
+      cause: new Error("connect ECONNREFUSED 127.0.0.1:1", {
+        cause: new Error("self-signed certificate"),
+      }),
+    });
+    expect(describeStartupFailure(err, "pi-FAKE-SECRET")).toBe(
+      "TypeError: fetch failed <- caused by Error: connect ECONNREFUSED 127.0.0.1:1 " +
+        "<- caused by Error: self-signed certificate",
+    );
+  });
+
+  it("redacts the key at every level of the cause chain", () => {
+    const err = new Error("outer pi-FAKE-SECRET", { cause: new Error("inner pi-FAKE-SECRET") });
+    const rendered = describeStartupFailure(err, "pi-FAKE-SECRET");
+    expect(rendered).not.toContain("pi-FAKE-SECRET");
+    expect(rendered).toBe("Error: outer *** <- caused by Error: inner ***");
+  });
+
+  it("renders a non-Error cause without the raw object", () => {
+    const err = new Error("outer", { cause: { secretish: "pi-FAKE-SECRET" } });
+    const rendered = describeStartupFailure(err, "pi-FAKE-SECRET");
+    expect(rendered).not.toContain("pi-FAKE-SECRET");
+    expect(rendered).toBe("Error: outer <- caused by Error: [object Object]");
+  });
+
+  it("stops on a cyclic cause chain instead of looping forever", () => {
+    const a = new Error("a");
+    const b = new Error("b", { cause: a });
+    (a as { cause?: unknown }).cause = b;
+    const rendered = describeStartupFailure(a, "pi-FAKE-SECRET");
+    expect(rendered).toBe("Error: a <- caused by Error: b <- caused by [circular cause]");
+  });
+
+  it("truncates an absurdly deep cause chain", () => {
+    let err = new Error("level-6");
+    for (let level = 5; level >= 0; level--) {
+      err = new Error(`level-${level}`, { cause: err });
+    }
+    const rendered = describeStartupFailure(err, "pi-FAKE-SECRET");
+    expect(rendered).toBe(
+      "Error: level-0 <- caused by Error: level-1 <- caused by Error: level-2 " +
+        "<- caused by Error: level-3 <- caused by Error: level-4 <- caused by [cause chain truncated]",
+    );
   });
 });

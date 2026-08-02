@@ -1,6 +1,7 @@
 // src/pageindex-client.ts
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { isUsableApiKey } from "./api-key.js";
 
 export interface DocumentInfo {
   name: string;
@@ -259,19 +260,26 @@ export async function accumulateNodeIds(
   );
 }
 
+// Hostnames that are unambiguously loopback, compared exactly - never by prefix or
+// suffix, which is what makes "localhost.evil.com" and "127.0.0.1.evil.com" fail. Every
+// entry is already in the form WHATWG URL normalizes to, so "127.1", "0x7f.1" and
+// "[0:0:0:0:0:0:0:1]" are covered without loosening the comparison. IPv4-mapped IPv6
+// ("[::ffff:127.0.0.1]", normalized to "[::ffff:7f00:1]") is deliberately NOT here:
+// it fails closed, and an operator can always spell the address the ordinary way.
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
 // PURE. Requires an https origin for the PageIndex backend, unless the host is
-// loopback (localhost or 127.0.0.1) - a legitimate plain-HTTP case for local
-// development. Guards the Authorization bearer token from ever being sent in
-// plaintext over a non-loopback link. Throws rather than returning a boolean so a
-// caller cannot forget to check the result. The thrown message names the rejected
-// origin, which is diagnostic and never a secret - the API key is never part of the
-// base URL.
+// loopback - a legitimate plain-HTTP case for local development. Guards the
+// Authorization bearer token from ever being sent in plaintext over a non-loopback
+// link. Throws rather than returning a boolean so a caller cannot forget to check the
+// result. The thrown message names the rejected origin via `url.host` (never
+// `url.href`), which is diagnostic and never a secret: the API key is never part of the
+// base URL, and `host` omits any userinfo the URL might carry.
 export function assertSecureBaseUrl(url: URL): void {
   if (url.protocol === "https:") return;
-  const isLoopback = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-  if (url.protocol === "http:" && isLoopback) return;
+  if (url.protocol === "http:" && LOOPBACK_HOSTNAMES.has(url.hostname)) return;
   throw new Error(
-    `PAGEINDEX_BASE_URL must use https: (plain http: is only allowed for localhost or 127.0.0.1), got ${url.protocol}//${url.host}`,
+    `PAGEINDEX_BASE_URL must use https: (plain http: is only allowed for localhost, 127.0.0.1 or [::1]), got ${url.protocol}//${url.host}`,
   );
 }
 
@@ -292,6 +300,25 @@ export class PageindexHttpClient implements DocLookup {
   private constructor(private readonly client: ToolCaller) {}
 
   static async connect(apiKey: string): Promise<PageindexHttpClient> {
+    // The key guard lives HERE, not only in the binary's entry point, because this is
+    // the function that interpolates the key into a header value - and it has callers
+    // other than src/index.ts (the credential-gated integration suite, and any embedder
+    // of the published package, since this class is exported). An unusable value that
+    // got this far would reach undici, which quotes the entire invalid header value -
+    // key included - in the TypeError it throws, and whatever prints that error (a test
+    // runner, an MCP host's log file) would then carry a live credential.
+    //
+    // The message is deliberately static: it names the category of problem and never
+    // echoes the value, not even a prefix of it. Throwing before the URL is even parsed
+    // also means no unusable key is ever attached to a transport.
+    if (!isUsableApiKey(apiKey)) {
+      throw new Error(
+        "PageIndex API key is unusable: it is blank, has surrounding whitespace, " +
+          "contains a control character (e.g. a newline from a wrapped paste or a " +
+          "two-line key file), or looks like a placeholder. Its value is not shown here " +
+          "on purpose. Trim it at the read site and pass the trimmed value.",
+      );
+    }
     // Overridable for a self-hosted backend (docs/design.md section 6).
     const baseUrl = process.env["PAGEINDEX_BASE_URL"] ?? DEFAULT_BASE_URL;
     const url = new URL(baseUrl);
