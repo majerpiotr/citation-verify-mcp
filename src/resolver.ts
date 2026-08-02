@@ -35,6 +35,23 @@ const BARE_NODE_SUGGESTION =
   "A node id alone cannot be verified: node ids are scoped to a single document's own " +
   "numbering, so this citation must also name the document it belongs to.";
 
+// The backend's own near-name hint (`similar_files`) fires when the extension is missing or
+// its case is wrong, but comes back EMPTY when the case of the name's stem differs
+// (docs/spike-b-findings.md section 4). That silent case is the most likely real-world
+// mistake, and it used to produce a bare `unresolved` with no explanation at all - which a
+// consuming agent acts on by deleting a claim that may name a document that genuinely exists
+// under a different capitalisation. This is a STATIC string on purpose: it names no document
+// and quotes no fragment of one, because refusing to guess which document was meant is this
+// server's whole premise. It does not change the verdict; the token stays `unresolved`.
+// Exported so the README's worked example, which quotes this string verbatim, can be pinned
+// to it by a test instead of carrying its own copy (test/server.test.ts).
+export const NO_NEAR_MATCH_SUGGESTION =
+  "No document with this exact name exists in the corpus, and no near match was offered. " +
+  "Names are matched case-sensitively and the file extension is part of the name, so a name " +
+  "differing only in capitalisation misses silently, with no hint. Look up the document's " +
+  "actual file name in the corpus before removing or rewriting this citation; do not guess " +
+  "at alternative capitalisations.";
+
 const PAGE_COUNT_UNKNOWN_SUGGESTION =
   "The document's page count is not available, so the cited page could not be verified.";
 
@@ -193,7 +210,14 @@ async function getDocOutcome(
     const result = await client.getDocument(docName);
     outcome = result.found
       ? { kind: "found", doc: result.doc }
-      : { kind: "not-found", suggestion: result.similar[0] ? `Did you mean "${result.similar[0]}"?` : null };
+      : {
+          kind: "not-found",
+          // A real near match from the backend is strictly better information than the
+          // generic hint, so it wins whenever one was offered.
+          suggestion: result.similar[0]
+            ? `Did you mean "${result.similar[0]}"?`
+            : NO_NEAR_MATCH_SUGGESTION,
+        };
   } catch {
     // The client's contract: a throw means the check could not run. Never reinterpreted as
     // a positive miss.

@@ -72,14 +72,46 @@ describe("verifyCitations", () => {
     expect(r.unresolved).toEqual(["typo.pdf"]);
   });
 
-  it("reports a missing document as unresolved with no suggestion when there is no near-miss hint", async () => {
+  // Measured against the live backend: the near-name hint (`similar_files`) arrives when the
+  // extension is missing or its case is wrong, but is EMPTY when the case of the name's stem
+  // differs - the most likely real-world mistake. Without a hint the citation used to arrive
+  // as a bare `unresolved` with no explanation, which a consuming agent acts on by deleting a
+  // claim that may name a document that genuinely exists under a different capitalisation.
+  // The static hint below closes that silence. It never names a document: refusing to guess
+  // which one was meant is the whole premise, and the verdict stays `unresolved`.
+  it("explains the miss with a static hint when there is no near-miss hint", async () => {
     const { client } = fakeClient({
       documents: { "missing.pdf": { found: false, similar: [] } },
     });
     const r = await verifyCitations("See missing.pdf.", client);
-    expect(r.details).toEqual([
-      { token: "missing.pdf", status: "unresolved", title: null, suggestion: null },
-    ]);
+    expect(r.details).toHaveLength(1);
+    const detail = r.details[0]!;
+    expect(detail.token).toBe("missing.pdf");
+    expect(detail.status).toBe("unresolved"); // the hint must NOT change the verdict
+    expect(detail.title).toBeNull();
+    expect(detail.suggestion).not.toBeNull();
+    expect(detail.suggestion).toMatch(/case-sensitiv/i);
+    expect(detail.suggestion).toMatch(/extension/i);
+    expect(detail.suggestion).toMatch(/exact name/i);
+  });
+
+  it("keeps the no-near-miss hint static: it never names or quotes a document", async () => {
+    const { client } = fakeClient({
+      documents: {
+        "missing.pdf": { found: false, similar: [] },
+        "some-doc-name-123.PDF": { found: false, similar: [] },
+      },
+    });
+    const r = await verifyCitations("See missing.pdf and some-doc-name-123.PDF.", client);
+    const suggestions = r.details.map((d) => d.suggestion);
+    // Identical for two different cited names: proof it is a constant, not a derived guess.
+    expect(suggestions[0]).toBe(suggestions[1]);
+    for (const s of suggestions) {
+      expect(s).not.toMatch(/missing/i);
+      expect(s).not.toMatch(/some-doc-name-123/i);
+      expect(s).not.toMatch(/\.pdf/i);
+      expect(s).not.toMatch(/"/); // no quoted string a reader could take for a real name
+    }
   });
 
   it("treats a getDocument throw as unchecked, never unresolved", async () => {

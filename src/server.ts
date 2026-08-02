@@ -24,8 +24,12 @@ export function createServer(client: DocLookup): McpServer {
         "`suggestion` distinguishes the two; `unchecked` - an ARRAY of " +
         "tokens the check could not run for (e.g. a timeout or the backend being down); " +
         "`details` - per citation `{ token, status, title, suggestion }`. `suggestion` " +
-        "may carry a near-miss document name or an explanation of what could not be " +
-        "checked, and should be acted on - including on a `resolved` verdict: when the " +
+        "may carry a near-miss document name, an explanation of a miss that WAS checked " +
+        "(the real page count, or a fixed case-sensitivity reminder when a document is " +
+        "absent and the backend offered no near name), or an explanation of what could " +
+        "not be checked; every `unresolved` carries one, so an absent near-miss name " +
+        "never means an empty `suggestion`. " +
+        "It should be acted on - including on a `resolved` verdict: when the " +
         "backend reports no page count, a cited page is not bounds-checked and the " +
         "citation can still resolve, with `suggestion` saying the page itself was never " +
         "verified. " +

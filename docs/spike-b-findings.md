@@ -87,9 +87,30 @@ args: { doc_id: "pi-cms9..." }
   "similar_files": ["<name>.pdf"], "next_steps": { ... } }
 ```
 
-Observed variants: an exact-name miss returns `similar_files: []`; a near miss (extension
-omitted) returns the close match; a case variant (`NAME.PDF` for `name.pdf`) is NOT found
-and returns `similar_files: []`.
+Observed variants: a name matching nothing at all returns `similar_files: []`; a near miss
+with the extension omitted (`name` for `name.pdf`) returns the close match. Case variants
+split, and the split decides whether an operator gets a hint or silence:
+
+- **Only the extension's case differs** (`name.PDF` for `name.pdf`): NOT found, but
+  `similar_files` DOES carry the correct name.
+- **The case of the name's stem differs** (`Name.pdf` or `NAME.PDF` for `name.pdf`): NOT
+  found, and `similar_files` is `[]` - the backend goes completely silent, offering no hint
+  that the document exists under a different capitalisation.
+
+Same-case typos split the same way, and WHERE the typo falls decides it. Against a real
+`konstytucja.pdf`, a hint came back for `konstytucia.pdf` (one letter substituted near the
+end), `konstytucj.pdf` (final letter dropped), `konstytucjaa.pdf` (one letter too many) and
+`konstytucja-rp.pdf` (suffix added); a hint also came back for `zwiazki-zawodowe.pdf`, a
+bare fragment of a longer real name. But `knostytucja.pdf` (the second and third letters
+transposed) and `kostytucja.pdf` (a letter dropped from the middle) both returned
+`similar_files: []`. The matcher appears to reward a shared prefix or containment, so a
+typo near the START of a name lands in the same silence as a case mismatch - and a
+transposition is the commonest keyboard typo there is. Mechanism inferred from eleven
+probes, not confirmed.
+
+None of this changes the verdict: every case above is `unresolved`. That is the point. The
+tool does not try to tell a typo from a fabrication, because the remedy is the same either
+way - go and read the corpus's real file name.
 
 ### The discriminator
 
@@ -170,6 +191,10 @@ by a page or a node.
   reported `unchecked`, never `unresolved`.
 
 ## 7. Free-tier account limits, observed while populating a corpus
+
+The figures in this section describe a **free account specifically**, not the service as a
+whole; paid plans differ, and no paid plan was observed here. Do not read a tier's quota as
+a property of the product.
 
 These bind ingestion, not the read path this server uses. They are recorded here because
 they bind design constraint C1: the corpus must actually contain the documents an agent

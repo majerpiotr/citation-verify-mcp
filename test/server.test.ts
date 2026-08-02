@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/server.js";
+import { NO_NEAR_MATCH_SUGGESTION } from "../src/resolver.js";
 import type { DocLookup, DocLookupResult } from "../src/pageindex-client.js";
 
 interface FakeConfig {
@@ -181,11 +182,16 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(
       /`total`\s*-\s*the count of DISTINCT recognized-shape citations \(identical citations collapse to one; different pages of the same document count separately\)/i,
     );
-    // `suggestion` is described as something to act on, not just a field name - both of its
-    // two forms (a near-miss name, OR an explanation of what could not be checked) are
-    // pinned together, not just the first.
+    // `suggestion` is described as something to act on, not just a field name. All THREE of
+    // its forms are pinned in one conjunction: a near-miss name, an explanation of a miss
+    // that WAS checked (the page count, or the resolver's static no-near-match reminder),
+    // and an explanation of what could not be checked. The two-form wording this replaced
+    // was not false, but it let a consuming model infer that an `unresolved` with no
+    // near-miss name carries an empty `suggestion` - which resolver.ts never produces. The
+    // closing "never means an empty `suggestion`" clause is inside the same regex, so it
+    // cannot be dropped while the three-form list survives.
     expect(description).toMatch(
-      /suggestion`? may carry a near-miss document name or an explanation of what could not be checked/i,
+      /suggestion`? may carry a near-miss document name, an explanation of a miss that WAS checked \(the real page count, or a fixed case-sensitivity reminder when a document is absent and the backend offered no near name\), or an explanation of what could not be checked; every `?unresolved`? carries one, so an absent near-miss name never means an empty `?suggestion`?/i,
     );
 
     // --- Critical 3: a `resolved` verdict can carry an unverified page ---
@@ -432,11 +438,26 @@ describe("createServer verify_citations tool", () => {
 // and each has a counterpart assertion against the live tool description above, so the two
 // documents cannot drift on it. Wording, ordering, section layout and prose style are NOT
 // pinned: a rewrite that keeps every claim true stays green.
-describe("README states the load-bearing claims the tool description states", () => {
-  // Whitespace is collapsed before matching: the README is hard-wrapped, so any claim long
+//
+// The prose documentation is now TWO files, not one: README.md carries what a stranger needs
+// to get running and to decide whether to trust the tool, and docs/citation-grammar.md carries
+// the exhaustive per-shape reference that used to sit inside the README. A guard has to follow
+// its content, so the assertions below read whichever file the claim now lives in - and where a
+// claim is stated in BOTH (the README summarizes it, the reference states it in full), BOTH are
+// pinned, because a summary that quietly stops matching its own reference is the same rot in a
+// new place. Deleting an assertion to make a move compile would reopen the exact hole this
+// block exists to close.
+describe("the prose documentation states the load-bearing claims the tool description states", () => {
+  // Whitespace is collapsed before matching: both files are hard-wrapped, so any claim long
   // enough to matter spans a line break, and pinning the break positions would make this a
   // formatting test - re-wrapping a paragraph would fail it while every claim stayed true.
-  const readme = readFileSync(fileURLToPath(new URL("../README.md", import.meta.url)), "utf8").replace(/\s+/g, " ");
+  const collapsed = (relative: string): string =>
+    readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8").replace(/\s+/g, " ");
+  const readme = collapsed("../README.md");
+  const grammarDoc = collapsed("../docs/citation-grammar.md");
+
+  // --- claims the README must carry ITSELF: a reader who never follows the link to the
+  // grammar reference must not be misled about any of them ---
 
   it("carries both halves of the `total: 0` guard", () => {
     expect(readme).toMatch(
@@ -444,23 +465,30 @@ describe("README states the load-bearing claims the tool description states", ()
     );
   });
 
+  it("quotes the no-near-match suggestion exactly as the resolver emits it", () => {
+    // The worked example prints this suggestion verbatim, and it is the ONE piece of the
+    // README that is a literal copy of a string in the code rather than a paraphrase of a
+    // claim - so it rots the instant the constant is reworded, silently and with the suite
+    // green. The constant is IMPORTED, never re-typed here: a test carrying its own copy of
+    // the string would pin the copy to itself and bind the README to nothing. Whitespace is
+    // collapsed on both sides for the same reason as everywhere else in this block - the
+    // README may re-wrap the quotation without any claim changing.
+    expect(readme).toContain(NO_NEAR_MATCH_SUGGESTION.replace(/\s+/g, " "));
+  });
+
   it("says an `unresolved` verdict does not always mean a missing document", () => {
     expect(readme).toMatch(/`unresolved` does not always mean the document is missing/i);
     expect(readme).toMatch(/only `suggestion` distinguishes/i);
   });
 
-  it("says a document name beside a URL inside the same bracket tag is still checked", () => {
+  it("states that a document must be named by its exact stored file name", () => {
+    // The single rule that decides whether ANY citation can resolve (pageindex-client.ts looks
+    // documents up by literal `doc_name`, and grammar.ts never case-normalizes a name). All
+    // three parts - exact stored name, extension included, case-sensitive - are pinned as one
+    // conjunction: "exact file name" alone would still pass while the case rule rotted out.
     expect(readme).toMatch(
-      /a `?<name>\.pdf`? elsewhere inside the same brackets[\s\S]{0,200}is still extracted and checked/i,
+      /exact stored file name[\s\S]{0,40}including the extension, matched case-sensitively/i,
     );
-  });
-
-  it("states the quoted-name shape rule including its leading character", () => {
-    expect(readme).toMatch(/begin(?:s|ning) with a letter or digit/i);
-  });
-
-  it("discloses that a citation glued to a URL by a sub-delimiter is dropped in every status", () => {
-    expect(readme).toMatch(/dropped in every status/i);
   });
 
   it("documents the https requirement on PAGEINDEX_BASE_URL and its loopback exception", () => {
@@ -468,15 +496,66 @@ describe("README states the load-bearing claims the tool description states", ()
     expect(readme).toMatch(/localhost[\s\S]{0,40}127\.0\.0\.1[\s\S]{0,40}\[::1\]/);
   });
 
-  it("states that .pdf is the only recognized extension", () => {
-    expect(readme).toMatch(/only `?\.pdf`? documents are recognized/i);
-  });
-
-  it("discloses that a bare name in a script without word spaces is not extracted", () => {
-    expect(readme).toMatch(/does not separate words with spaces[\s\S]{0,300}quote/i);
-  });
-
   it("tells the operator never to delete an `unchecked` citation", () => {
     expect(readme).toMatch(/unchecked`? citation[\s\S]{0,120}(leave it in place|do not delete)/i);
+  });
+
+  // --- claims stated in BOTH files: the README summarizes the shape rules, the reference
+  // states them in full. Each is pinned in both, so neither copy can rot out alone. ---
+
+  it("states in both files that .pdf is the only recognized extension", () => {
+    expect(readme).toMatch(/only `?\.pdf`? documents are recognized/i);
+    expect(grammarDoc).toMatch(/only `?\.pdf`? documents are recognized/i);
+  });
+
+  it("states the quoted-name shape rule including its leading character, in both files", () => {
+    expect(readme).toMatch(/begin(?:s|ning) with a letter or digit/i);
+    expect(grammarDoc).toMatch(/begin(?:s|ning) with a letter or digit/i);
+  });
+
+  it("discloses in both files that a bare name in a script without word spaces is not extracted", () => {
+    expect(readme).toMatch(/does not separate words with spaces[\s\S]{0,300}quote/i);
+    expect(grammarDoc).toMatch(/does not separate words with spaces[\s\S]{0,300}quote/i);
+  });
+
+  it("discloses in both files that a citation glued to a URL by a sub-delimiter is dropped in every status", () => {
+    expect(readme).toMatch(/dropped in every status/i);
+    expect(grammarDoc).toMatch(/dropped in every status/i);
+  });
+
+  // --- claims that now live ONLY in the grammar reference. The exhaustive per-shape detail
+  // moved out of the README, so its guard moved with it rather than being dropped. ---
+
+  it("says a document name beside a URL inside the same bracket tag is still checked", () => {
+    expect(grammarDoc).toMatch(
+      /a `?<name>\.pdf`? elsewhere inside the same brackets[\s\S]{0,200}is still extracted and checked/i,
+    );
+  });
+
+  // --- the grammar reference is reachable directly from a search engine, so it must restate
+  // the two verdicts and the naming rule itself rather than assume the README's context ---
+
+  it("the grammar reference restates the exact-stored-name rule for a reader arriving directly", () => {
+    expect(grammarDoc).toMatch(
+      /exact stored file name[\s\S]{0,40}including the extension, matched case-sensitively/i,
+    );
+  });
+
+  it("the grammar reference restates the `unresolved` vs `unchecked` distinction", () => {
+    expect(grammarDoc).toMatch(
+      /`unresolved` means the citation was checked against the corpus and positively not found[\s\S]{0,30}`unchecked` means the check could not run/i,
+    );
+  });
+
+  it("the grammar reference restates the `total: 0` guard", () => {
+    expect(grammarDoc).toMatch(
+      /`?total: 0`? means no citation of a recognized shape was found[\s\S]{0,40}not a clean bill of health, and not proof the text has no citations/i,
+    );
+  });
+
+  it("the README links the grammar reference where its summary ends", () => {
+    // The summary is only honest if the exhaustive version is one click away; a summary that
+    // silently loses its link becomes a partial account presented as a whole one.
+    expect(readme).toMatch(/docs\/citation-grammar\.md/);
   });
 });
