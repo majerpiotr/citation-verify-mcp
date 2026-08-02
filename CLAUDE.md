@@ -93,11 +93,21 @@ for the full ledger and every operator ruling):
   unverifiable claims is a routine outcome. Both the README and the tool description say
   so; do not quietly soften that.
 - Grammar over-reach still produces a false `unresolved` on some non-citations, and
-  under-reach still misses some real ones. Each case is disclosed in the tool description
-  and the README. If you change the grammar, update both - they are pinned by assertions
-  in `test/server.test.ts`, which will fail if you do not.
+  under-reach still misses some real ones. A citation glued to a preceding URL by `,`, `;`,
+  `(` or `)` is silently dropped in every status (a ruled-on trade-off: a false
+  `unresolved` on a valid external link is worse than a silence). Each case is disclosed in
+  the tool description and the README. **If you change the grammar, update both.**
+  `test/server.test.ts` pins the tool description clause by clause, and its
+  "README states the load-bearing claims the tool description states" block pins the
+  README's half of the same claims - substance only, whitespace-normalized, so re-wrapping
+  a paragraph is fine and deleting a claim is not. Neither block is exhaustive: a claim you
+  add is only guarded once you add the assertion with it.
 - No per-call timeout budget across a whole draft; the SDK's 60s per-request default is
-  the only bound. `PAGEINDEX_FOLDER_ID` is not implemented.
+  the only bound, and `verifyCitations` is sequential, so the bound multiplies by the
+  number of distinct documents (disclosed in the README's known limits).
+  `PAGEINDEX_FOLDER_ID` is not implemented.
+- `package.json` declares `"license": "MIT"` but there is no `LICENSE` file in the repo,
+  and `"files": ["dist"]` would not ship one. Unresolved; the owner's call.
 
 ## Commands
 

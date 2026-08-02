@@ -45,13 +45,26 @@ Add this block to your MCP host's server configuration:
   may already have.
 - `PAGEINDEX_BASE_URL` (optional): overrides the PageIndex endpoint, for a self-hosted
   PageIndex backend. Defaults to `https://api.pageindex.ai/mcp`; leave it unset for
-  PageIndex Cloud.
+  PageIndex Cloud. **It must use `https:`** - the API key travels on every request as a
+  bearer token, and plain `http:` would put it on the wire in clear text. The single
+  exception is a loopback host, where plain `http:` is accepted for local development:
+  `localhost`, `127.0.0.1`, or `[::1]`, compared exactly. A self-hosted backend reached
+  over plain HTTP on any other host (`http://pageindex.internal:3000/mcp`) is rejected and
+  the server exits; terminate TLS in front of it, or run it on loopback.
 
 The server refuses to start - logging to stderr and exiting non-zero - if
-`PAGEINDEX_API_KEY` is missing, blank, or looks like an unfilled placeholder (an
-unsubstituted `${...}` reference, or a literal `your-api-key`-style value). An invalid but
-plausible-looking key fails when the server connects to PageIndex, which is reported to
-the host as a startup error rather than a working-but-broken tool.
+`PAGEINDEX_API_KEY` is missing, blank, looks like an unfilled placeholder (an
+unsubstituted `${...}` reference, or a literal `your-api-key`-style value), or carries a
+control character *inside* the value. That last case is the easy one to misread: a key that
+got line-wrapped on paste, or a two-line key file read in whole, is a real key the server
+still refuses, because no control character can legally sit in an `Authorization` header.
+Surrounding whitespace is trimmed first, so a trailing newline alone is harmless - it is an
+interior `\n` or `\r` that is fatal. The startup message names "placeholder" among the
+causes, so check for a stray line break before concluding the key itself is wrong. A
+`PAGEINDEX_BASE_URL` that is not https (and not loopback) is refused
+the same way. An invalid but plausible-looking key fails when the server connects to
+PageIndex, which is reported to the host as a startup error rather than a
+working-but-broken tool.
 
 **Unplugging is removing the block.** There is no other integration point.
 
@@ -99,6 +112,15 @@ block:
 - `total` is the count of **distinct** recognized-shape citations - repeated citations of
   the same token collapse to one.
 - `resolved` is a count. `unresolved` and `unchecked` are arrays of tokens.
+- **`unresolved` does not always mean the document is missing.** It means a miss was
+  positively established against the corpus - and that miss can be the document, the page,
+  or the node. A document that really is in the corpus, cited with a page outside its real
+  page count or a node absent from its outline, is reported `unresolved` with `title: null`
+  exactly like a document that does not exist at all. Only `suggestion` distinguishes the
+  two ("This document has 10 pages; the cited page is outside that range." versus a
+  near-miss name or nothing), so a consuming agent must read it before deleting anything:
+  a real source cited with a wrong page number should have the page corrected, not the
+  claim removed.
 - `details` carries one entry per distinct citation: `token`, `status`
   (`resolved` | `unresolved` | `unchecked`), `title` (the resolved document's name, or
   `null`), and `suggestion` (a string worth acting on, or `null`).
@@ -129,14 +151,43 @@ to any other extension (`.docx`, `.txt`, `.md`, ...) is not extracted at all.
 own lookup is case-sensitive, so a citation of `Report.PDF` will not match an existing
 `report.pdf`). The `.pdf` extension itself is matched case-insensitively.
 
-A bare match is skipped entirely - not `resolved`, not `unresolved`, not `unchecked` - when
-it is the path segment of a URL: a literal `://` appears earlier on the same line with no
-whitespace between it and the match (`https://example.com/whitepaper.pdf` is not read as a
-citation to `whitepaper.pdf`). This check is deliberately narrow: a scheme-relative URL
-(`//example.com/doc.pdf`) or a bare host with no scheme marker at all (`example.com/doc.pdf`)
-is **not** recognized as a URL and **is** still read as an ordinary document name - a
-legitimate external link written either of those two ways can therefore be checked against
-the corpus and come back `unresolved`.
+An unquoted name may contain letters, combining marks, digits, `_`, `-` and `.`, in **any
+script** - `raport-główny-2024.pdf`, `отчёт-2024.pdf` and `보고서.pdf` are all read whole.
+It may not contain a space (quote it - see "Quoted names"), and unlike a quoted name it
+*may* begin with `_`, `-` or `.` (`_internal-draft.pdf` is read whole).
+
+One deliberate exception: a **bare** name written in a script that does not separate words
+with spaces - Han, Hiragana, Katakana, Thai, Lao, Khmer, Myanmar, Tibetan - is not
+extracted at all (`total: 0`), because there is no space to tell the reader where the name
+starts, and guessing would report a whole clause the author never wrote as a document name.
+**Quote such a name** (`"年次報告書.pdf"`) and it is read exactly; a Latin-script name glued
+directly to such text (`詳細はreport.pdf`) is still read normally.
+
+A match is skipped entirely - not `resolved`, not `unresolved`, not `unchecked` - when it is
+the path segment of a URL: a literal `://` appears earlier on the same line and nothing
+between it and the match could have ended the URL (`https://example.com/whitepaper.pdf` is
+not read as a citation to `whitepaper.pdf`). The URL is taken to run until the first
+character a URL cannot contain at all: any Unicode whitespace (`U+00A0` included), an em or
+en dash, a `"` or a typographic quote, `<`, `>`, `{`, `}`, `|`, `\`, `^`, or a backtick.
+(A straight apostrophe `'` is *not* in that group - it is legal in a URL, so it does not
+end the run.) This applies to a quoted or backtick-delimited match as well as a bare one,
+so ``https://example.com/`report.pdf` `` yields nothing either.
+
+Two gaps in that rule, both deliberate, both with consequences worth knowing:
+
+- A character a URL path *may* legally contain - `,`, `;`, `(`, `)` and the other RFC 3986
+  sub-delimiters - does **not** end the URL run. A real citation glued to a URL by one of
+  them (`https://example.com/doc.pdf;annual-report.pdf`) is read as part of that URL and is
+  therefore **dropped in every status**: it is absent from `details`, and `total` does not
+  count it, which looks exactly like there being nothing to check. Breaking the run on those
+  characters would instead un-suppress the last path segment of any real URL containing one
+  earlier in its path (`.../w_100,h_200/report.pdf`), turning a safe silence into a false
+  `unresolved` on a valid external link - the worse of the two errors, so the silence is
+  kept and disclosed here rather than traded away.
+- A scheme-relative URL (`//example.com/doc.pdf`) or a bare host with no scheme marker at
+  all (`example.com/doc.pdf`) is **not** recognized as a URL and **is** still read as an
+  ordinary document name - a legitimate external link written either of those two ways can
+  therefore be checked against the corpus and come back `unresolved`.
 
 **Page.** Optionally follows a document - **bare or quoted alike**, the same rules apply
 to both - on the **same line**, with nothing else between them but a recognized
@@ -170,14 +221,32 @@ literal closing `]`. Examples: `[node:some-doc-id-123]`, `[chunk: abc-42]`.
 
 The value is reported **`unchecked`** and never bound to any document outside the
 brackets - its id space has no defined relationship to the backend's per-document node
-ordinals - **unless the value itself contains a recognizable `<name>.pdf`**. When it does,
-that real document (and any page or node cited alongside it inside the same brackets, e.g.
-`[Source: report.pdf p.5]`) is extracted and checked exactly as it would be in ordinary
-prose, not swallowed into one opaque `unchecked` citation. Only a value that is not
-document-shaped (an invented slug like `some-doc-id-123`) stays `unchecked`; cite the real
-`<name>.pdf` (optionally with a page or `node_id:`) to get an actual verdict for that
-citation. A tag whose value contains `://` (a URL) is excluded entirely and is not treated
-as a citation of any kind, even when the URL's own path segment looks document-shaped.
+ordinals - **unless the value names a recognizable `<name>.pdf` as a standalone token**.
+When it does, that real document (and any page or node cited alongside it inside the same
+brackets, e.g. `[Source: report.pdf p.5]`) is extracted and checked exactly as it would be
+in ordinary prose, not swallowed into one opaque `unchecked` citation.
+
+"Standalone" is the operative word: the name must not be glued into a longer identifier.
+`[node: sub/chapter.pdf]`, `[node: v1.pdf-part2]`, `[node: report.pdfx]` and
+`[node: 2024.pdf.chunk3]` all stay `unchecked`, because reading a document name out of an
+opaque id would check something the author never cited - and the identical id written as
+`node_id: sub/chapter.pdf` has always stayed `unchecked`, so the two syntaxes must agree. A
+value that is simply not document-shaped (an invented slug like `some-doc-id-123`) stays
+`unchecked` too; cite the real `<name>.pdf` (optionally with a page or `node_id:`) to get an
+actual verdict. When a value carries **both** a slug and a standalone document
+(`[node: abc-123 report.pdf]`), the document is checked and the slug is reported in no
+status at all - the slug is unverifiable either way, while the document is a checkable claim
+that must not hide behind `unchecked`.
+
+A tag whose value contains `://` (a URL) is not reported as an id at all. **That silences
+only the tag, not the brackets.** The ordinary document scan still reads the same text, so a
+`<name>.pdf` elsewhere inside the same brackets - one that is not itself part of the URL -
+is still extracted and checked like any other citation:
+`[Source: Annual Overview report.pdf - https://blog.example.com/post]` yields `report.pdf`,
+which can come back `unresolved` if no such file is in the corpus. The URL's *own* path
+segment is still suppressed (`[Source: https://example.com/doc.pdf]` yields nothing).
+Map an `unresolved` token back to the bracket it came from before deleting anything: the
+citation there may be a perfectly valid web reference that this tool cannot verify.
 
 **A bare `node_id: <id>` with no document anywhere in the same sentence is `unchecked`,
 never `unresolved`.** Node numbering is per-document - every document has a node
@@ -190,24 +259,35 @@ backticks to be read exactly: `"Annual Report.pdf"`. A quoted name is honoured v
 only when it is genuinely file-name-shaped:
 - at most 4 space-separated words,
 - at most 80 characters,
-- letters, digits, spaces, dots, underscores, and hyphens only (the same allowed set as an
-  unquoted name, minus the space restriction).
+- **beginning with a letter or digit**,
+- and otherwise letters, combining marks, digits, spaces, dots, underscores, and hyphens
+  only - letters and digits of any script, so `"Rapport Financiér.pdf"` and
+  `"raport główny.pdf"` are both honoured whole.
+
+The leading-character rule is where the quoted and unquoted paths differ, and the
+difference is silent: `_`, `.` and `-` are legal *inside* an unquoted name **and at its
+start** (`_internal-draft.pdf` is read whole), but a quoted name starting with one fails
+the shape check. `"_internal draft.pdf"` is therefore not read as itself - it falls back to
+the unquoted path and is read as `draft.pdf`, a different document.
 
 **Quoting does not rescue a name containing any other character** - an apostrophe, `&`,
-comma, colon, parenthesis, non-ASCII letter, and so on. A rejected quoted name falls
-through to be matched exactly like an unquoted one, and the measured result is not one
-single, predictable fallback:
+comma, colon, parenthesis, `+`, `/`, and so on - nor one over the word or character limit.
+A rejected quoted name falls through to be matched exactly like an unquoted one, and the
+measured result is not one single, predictable fallback:
 - It can be **dropped entirely**: `Report (final).pdf` (quoted or not) matches nothing at
   all, because the parenthesis breaks the allowed-character run on both sides, and a real
   citation that was the only one in the text reports `total: 0`.
-- It can be **read as a fragment that is not the last space-free segment**:
-  `"Rapport Financiér.pdf"` is read as `r.pdf`, not `Financiér.pdf` - the allowed-character
-  run is cut at the accented letter, wherever that happens to fall, not at the nearest
-  space. Only when the disallowed character happens to sit exactly at a word boundary does
-  the result look like "the last word": `"Report, Final.pdf"` happens to read as
-  `Final.pdf`, but that is a coincidence of where the comma fell, not a rule to rely on.
+- It can be **read as a fragment cut at the disallowed character**, which is not the same
+  thing as "the last space-free segment": `"Report+Final.pdf"` has no space in it at all,
+  yet is read as `Final.pdf`, because the run is cut at the `+` wherever that falls.
+  `"Report: Final.pdf"` reads as `Final.pdf` and `"R&D summary.pdf"` as `summary.pdf` -
+  those two only *look* like "the last word" because the disallowed character happened to
+  sit at a word boundary, which is a coincidence, not a rule to rely on.
+- The word limit fails the same way and is easy to hit with a real file name:
+  `"Q3 Financial Results Final Draft.pdf"` is five words, so it is rejected and read as
+  `Draft.pdf`.
 
-Neither outcome produces a false `resolved` on its own (the wrong fragment resolves or
+No such outcome produces a false `resolved` on its own (the wrong fragment resolves or
 fails to resolve on its own merits), but a real citation to such a name can go silently
 unverified with no trace in `details` (the drop case) or get checked against a wrong,
 often unrecognizable document (the fragment case) - check `title` on a `resolved` verdict,
@@ -235,17 +315,25 @@ delimiter rule is what makes a real space-bearing file name checkable at all.
   en dash, or "to" - such a range is not dropped, but truncated to its first page only
   (see the "Page" bullet above).
 - A document name with spaces, unquoted, or quoted but failing the file-name shape check
-  (more than 4 words, over 80 characters, or containing a character outside
-  letters/digits/spaces/dots/underscores/hyphens) - both fall back to being dropped
-  entirely or read as a shorter, not-necessarily-last fragment; see "Quoted names" above.
+  (more than 4 words, over 80 characters, not beginning with a letter or digit, or
+  containing a character outside letters/marks/digits/spaces/dots/underscores/hyphens) -
+  both fall back to being dropped entirely or read as a shorter fragment cut at the
+  offending character; see "Quoted names" above.
+- A **bare** document name in a script that does not separate words with spaces (Han,
+  Hiragana, Katakana, Thai, Lao, Khmer, Myanmar, Tibetan) - quote it and it is read
+  exactly; see "Document" above.
 - A single-quoted name (`'report.pdf'`).
-- A bare `node_id` with no document in its sentence, or a bracket tag whose value is not
-  itself document-shaped - both are extracted, but always `unchecked`.
-- A bracket-tag value containing `://` (a URL) - not treated as a citation at all.
-- A bare document match that is a URL's own path segment (preceded on the same line by
-  `://` with no whitespace in between) - not extracted at all, in any status. A
-  scheme-relative or bare-host URL is not covered by this and is still read as a document
-  name; see "Document" above.
+- A bare `node_id` with no document in its sentence, or a bracket tag whose value does not
+  name a document as a standalone token - both are extracted, but always `unchecked`.
+- A bracket-tag value containing `://` (a URL) - the tag itself is not reported as an id,
+  though a standalone `<name>.pdf` elsewhere in the same brackets still is; see
+  "Bracket-tag identifier" above.
+- A document match that is a URL's own path segment (preceded on the same line by `://`
+  with nothing between that could have ended the URL) - not extracted at all, in any
+  status, whether it is bare, quoted or backtick-delimited. Two things are not covered by
+  this: a scheme-relative or bare-host URL, which is still read as a document name, and a
+  citation glued to a URL by `,`, `;`, `(` or `)`, which is swallowed into the URL and
+  dropped in every status; see "Document" above.
 
 ## What is and is not verified
 
@@ -264,8 +352,10 @@ Integrating a specific host's agent behavior is outside this project's scope, bu
 generically: instruct the agent to call `verify_citations` on its own draft before
 finalizing.
 
-- For every `unresolved` citation: remove the claim, or search again and replace it with
-  a citation that actually resolves.
+- For every `unresolved` citation: **read `suggestion` first.** If it says the document
+  exists and only the cited page is out of range (or the cited node is absent), correct
+  that - the source is real and the claim should stay. Otherwise remove the claim, or
+  search again and replace it with a citation that actually resolves.
 - For every `unchecked` citation: **leave it in place**, optionally with a note. Do not
   delete it. `unchecked` means the corpus was never consulted for that citation - because
   of a bare node id, a timeout, or the backend being unreachable - so it may well be
@@ -297,12 +387,19 @@ Cite in one of these forms:
 - A document with a node: report.pdf, node_id: 0007
 - A name with spaces, in double quotes: "Annual Report.pdf" p.3
 
-After the call: for every unresolved citation, remove the claim or replace it with one
-that resolves. For every unchecked citation, keep it as written - the corpus was never
-consulted, so it may well be valid; do not delete it. Read suggestion even on a resolved
-citation - a cited page is sometimes not verifiable, and the citation still resolves
-without it. A citation written in any other form is not checked at all: total: 0 means
-nothing checkable was found, not that the draft is clean.
+A quoted name is only honoured when it is at most 4 words and 80 characters, starts with
+a letter or digit, and contains nothing but letters, digits, spaces, dots, underscores and
+hyphens. A name outside that shape is silently read as a shorter fragment of itself and
+checked as a different document, so prefer the shortest real file name available.
+
+After the call: for every unresolved citation, read suggestion before acting. If it says
+the document exists and only the cited page or node missed, fix that and keep the claim -
+the source is real. Otherwise remove the claim or replace it with one that resolves. For
+every unchecked citation, keep it as written - the corpus was never consulted, so it may
+well be valid; do not delete it. Read suggestion even on a resolved citation - a cited
+page is sometimes not verifiable, and the citation still resolves without it. A citation
+written in any other form is not checked at all: total: 0 means nothing checkable was
+found, not that the draft is clean.
 ```
 
 This is an instructed format, not a guaranteed one. One real consuming application that
@@ -358,16 +455,37 @@ npx vitest run test/integration.test.ts
   against your own agent's real output, not as a solved problem.
 - A citation-shaped string that is not actually a citation can still be flagged: a
   bracket tag like `[TODO: fix this]` or `[note: reminder]` matches the generic
-  `[<word>:<id>]` pattern and is reported as an `unchecked` citation. Harmless - it is
-  never treated as `resolved` or `unresolved` - but it adds noise to `details`.
+  `[<word>:<id>]` pattern and is reported as an `unchecked` citation - noise in `details`,
+  but harmless, since a value that names no document is never `resolved` or `unresolved`.
+  A bracket tag whose value *does* name a standalone document is a different matter: it is
+  checked like any other citation and can come back `unresolved`, so `[node: 3f9a-chunk.pdf]`
+  is a real verdict, not noise. See "Bracket-tag identifier" above.
 - The connector-word list (`on`, `at`, `see`), the quoted-name shape limits (at most 4
   words, 80 characters), and the bracket-tag keyword acceptance are fixed choices made
   without corpus evidence of what real agents actually write. They may need revisiting
   once more real output is available.
 - Only `.pdf` documents are recognized; there is no support for any other extension.
-- An unquoted or shape-rejected document name containing a space is not reliably read as
-  its last space-free segment - it may be dropped entirely or read as a shorter fragment
-  cut at the first disallowed character, wherever that falls - see "Quoted names" above.
+- A shape-rejected document name is not reliably read as its last space-free segment - it
+  may be dropped entirely or read as a shorter fragment cut at the disallowed character,
+  wherever that falls, even in a name with no space in it at all - see "Quoted names"
+  above. (A non-ASCII letter is no longer such a character: names in any script are read
+  whole. What still cuts a run is punctuation outside `_`, `-` and `.`)
+- A citation glued to a preceding URL by `,`, `;`, `(` or `)` is read as part of that URL
+  and is **dropped in every status** - it appears in no array and is not counted in
+  `total`, which is indistinguishable from there being nothing to check. Deliberate: the
+  alternative un-suppresses the tail of real URLs whose paths contain those characters,
+  producing a false `unresolved` on a valid external link - see "Document" above.
+- A **bare** document name written in a script that does not separate words with spaces
+  (Han, Hiragana, Katakana, Thai, Lao, Khmer, Myanmar, Tibetan) is not extracted at all.
+  Quote it and it is read exactly - see "Document" above.
+- **There is no timeout budget for a whole call.** Each backend request is bounded only by
+  the MCP SDK's 60-second per-request default, and citations are resolved **sequentially**,
+  each distinct document costing one existence lookup plus (if a node is cited) one or more
+  structure requests. A draft citing many distinct documents can therefore take many
+  multiples of 60 seconds in the worst case before the tool returns anything. In practice
+  the host's own tool-call timeout fires first, which surfaces as an MCP error - safe,
+  since every citation is then `unchecked` rather than `unresolved` - but until it does, a
+  slow backend is indistinguishable from a hang.
 - A quoted or backtick-delimited span of at most 4 words ending in `.pdf` is read as a
   document name even inside inline code, so a harmless shell example naming an unrelated
   `.pdf`-like word can be flagged `unresolved` - see "Quoted names" above.

@@ -8,6 +8,8 @@
 // round-tripping, and the tool description's load-bearing clauses (docs/rework-plan.md Task
 // R4) pinned by meaning-carrying regexes rather than a verbatim string pin.
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/server.js";
@@ -156,8 +158,15 @@ describe("createServer verify_citations tool", () => {
     // inserts a qualifier before it (e.g. "...fully verified end to end, page included")
     // cannot slip through.
     expect(description).toMatch(/`resolved`\s*-\s*a COUNT;/);
-    // `unresolved` is an array of tokens, not a count.
-    expect(description).toMatch(/unresolved`?\s*-\s*an ARRAY of tokens confirmed absent from the corpus/i);
+    // `unresolved` is an array of tokens, not a count - AND the gloss must not claim the
+    // document itself is absent, because resolver.ts returns `unresolved` for a document
+    // that IS present when only the cited page or node missed. Pinned as one conjunction
+    // (the array type, the "not always a missing document" correction, and the pointer to
+    // `suggestion` as the only thing that distinguishes them) so a rewording cannot restore
+    // the old "confirmed absent from the corpus" reading while keeping the other pieces.
+    expect(description).toMatch(
+      /unresolved`?\s*-\s*an ARRAY of tokens whose miss was POSITIVELY established against the corpus, which does NOT always mean the document is missing: a document that IS present, cited with a page outside its real page count or a node absent from its outline, is `?unresolved`? too, with `?title`?\s*:?\s*`?null`? either way - only `?suggestion`? distinguishes the two/i,
+    );
     // `unchecked` is an array too - the FULL example parenthetical is pinned positively
     // (not a `.not.toMatch` ban on one wrong wording), so swapping in a false cause like
     // "a missing credential" fails this instead of silently passing.
@@ -193,8 +202,13 @@ describe("createServer verify_citations tool", () => {
 
     // --- the primary `unresolved` action directive (Important 5 named this explicitly -
     // `/do not delete them/i` below guards only the `unchecked` half of the pair) ---
+    // The imperative is pinned TOGETHER with its exception: an `unresolved` whose
+    // `suggestion` says the document exists and only the page or node missed must be
+    // corrected, not deleted. Splitting these into two assertions would let the exception be
+    // dropped while the imperative stayed green - the deletion harm this whole distinction
+    // exists to prevent.
     expect(description).toMatch(
-      /For each `unresolved` citation, remove the claim or replace it with a verified citation\./,
+      /For each `unresolved` citation, remove the claim or replace it with a verified citation - unless `suggestion` says the document exists and only the page or node missed, in which case fix that instead\./,
     );
     // --- outage-safety imperatives - the reason clause ("the corpus was never consulted...")
     // is pinned together with "Do NOT remove", not just the trailing "do not delete them" ---
@@ -221,6 +235,13 @@ describe("createServer verify_citations tool", () => {
     // The base recognized shape - a bare document citation - was previously assumed covered
     // by neighbouring assertions but had no dedicated pin of its own.
     expect(description).toMatch(/a document written as `<name>\.pdf`/);
+    // The "Recognized citation shapes" lead-in is what frames the block below it as the
+    // EXHAUSTIVE list; without it nothing tells a consuming model that a shape absent from
+    // the list is simply not checked. Pinned together with the `.pdf`-only rule, which the
+    // description never stated at all even though the grammar enforces it.
+    expect(description).toMatch(
+      /Recognized citation shapes - the list below is exhaustive, and `\.pdf` is the ONLY recognized extension \(a name ending in any other, e\.g\. `report\.docx`, is not extracted at all\)/,
+    );
     // "rewrite it in a recognized form and call again" - the concrete instruction half of
     // the `total: 0` guard, previously left unpinned even though the guard itself (further
     // below) was.
@@ -264,8 +285,17 @@ describe("createServer verify_citations tool", () => {
     // deliberately-uncovered scheme-relative/bare-host half is pinned separately and
     // positively (the exact examples), since THAT half is what still produces a false
     // `unresolved` and is the one a consuming agent most needs to see. ---
+    // The boundary is no longer "whitespace" (grammar.ts RE_URL_RUN_CHAR): the run ends at
+    // the first character a URL cannot contain, and the exclusion now covers a quoted or
+    // backtick-delimited match too. Pinned as one conjunction so neither the widened
+    // boundary nor the quoted coverage can be dropped while the other survives.
     expect(description).toMatch(
-      /A bare match after a same-line `:\/\/` with no whitespace in between is invisible - not resolved, unresolved, or unchecked/i,
+      /A match after a same-line `:\/\/` is invisible - not resolved, unresolved, or unchecked - while nothing between them could have ended the URL \(the run ends at the first character a URL cannot contain[^)]*\), and this covers a quoted or backtick-delimited match too/i,
+    );
+    // The accepted silence: a URL sub-delimiter does NOT end the run, so a citation glued to
+    // a URL by one is absent from every status. An accepted gap must be a disclosed gap.
+    expect(description).toMatch(
+      /A character a URL path MAY contain \(`,`, `;`, `\(`, `\)`\) does NOT end it, so a citation glued to a URL by one of those is dropped in EVERY status - absent from the output entirely, which looks identical to there being nothing to check/i,
     );
     expect(description).toMatch(
       /scheme-relative \(`\/\/host\/doc\.pdf`\) and bare-host \(`host\/doc\.pdf`\) forms are NOT covered and are still read as document names, risking a false `unresolved`/i,
@@ -278,8 +308,11 @@ describe("createServer verify_citations tool", () => {
     // this is the part that actually changed), and the non-document-shaped fallback -
     // dropping any one of the three would silently reintroduce the old, now-false
     // "always unchecked" claim. ---
+    // "names a real `<name>.pdf`" alone is no longer true: the name must stand as its own
+    // token, not be glued into a longer identifier (grammar.ts containsStandaloneDocName), so
+    // the STANDALONE qualifier is pinned inside the same regex as the trigger.
     expect(description).toMatch(
-      /`\[node:<id>\]` or `\[<word>:<id>\]` - is `unchecked` UNLESS its value names a real `<name>\.pdf`/,
+      /`\[node:<id>\]` or `\[<word>:<id>\]` - is `unchecked` UNLESS its value names a real `<name>\.pdf` as a STANDALONE token \(not glued into a longer identifier: `\[node: sub\/chapter\.pdf\]`, `\[node: v1\.pdf-part2\]` and `\[node: report\.pdfx\]` stay `unchecked`\)/,
     );
     expect(description).toMatch(
       /then that document \(and any page\/node cited alongside it\) is checked as in prose/i,
@@ -288,7 +321,15 @@ describe("createServer verify_citations tool", () => {
       /otherwise it stays a standalone `unchecked` id, never bound to any document \(id space unconfirmed\)/i,
     );
     expect(description).toMatch(/cite the real `<name>\.pdf` for a verdict/i);
-    expect(description).toMatch(/A URL-valued tag \(`\[Source: https:\/\/\.\.\.\]`\) is not a citation at all/);
+    // The old claim ("a URL-valued tag is not a citation at all") is false: the `://` check
+    // makes the TAG step aside, reserving nothing, so any document-shaped token elsewhere
+    // inside the same brackets is read by the ordinary passes and can come back
+    // `unresolved` - which would make a consuming agent delete a valid web citation. The
+    // measured example and the "map it back before deleting" instruction are pinned together
+    // with the rule, because the rule without them reads as reassurance.
+    expect(description).toMatch(
+      /A tag whose value contains `:\/\/` is not reported as an id at all, but that silences only the TAG: a `<name>\.pdf` inside the same brackets that is not itself part of the URL \(`\[Source: Annual Overview report\.pdf - https:\/\/example\.com\/post\]` yields `report\.pdf`\) is still read as an ordinary document citation and can come back `unresolved` - map it back to the bracket before deleting anything, since the citation there may be a valid web reference/,
+    );
 
     // --- quoting rule: the CONJUNCTION is what carries the meaning, not its two halves -
     // pinning only "double quotes or backticks" and only "file-name-shaped" separately
@@ -299,9 +340,22 @@ describe("createServer verify_citations tool", () => {
       /A name containing spaces must be wrapped in double quotes or backticks AND be file-name-shaped/i,
     );
     // The allowed-character set (not a forbidden-character list, which reads as exhaustive
-    // but omits `(`, `)`, `+`, `/`, `#`, etc. - Minor fix).
+    // but omits `(`, `)`, `+`, `/`, `#`, etc. - Minor fix). The set is now Unicode-aware
+    // (grammar.ts NAME_CHARS) and the FIRST character must be a letter or digit
+    // (RE_FILE_NAME_SHAPE), which the old wording omitted - pinned as one conjunction with
+    // the word/character limits so the leading-character rule cannot rot out again.
     expect(description).toMatch(
-      /file-name-shaped \(at most 4 words, 80 characters, letters\/digits\/spaces\/dots\/underscores\/hyphens only\)/i,
+      /file-name-shaped \(at most 4 words, 80 characters, beginning with a letter or digit, and otherwise only letters\/digits\/spaces\/dots\/underscores\/hyphens - letters and digits of ANY script count\)/i,
+    );
+    // The leading-character rule differs between the quoted and unquoted paths, and the
+    // consequence is a silently different document - pinned with its measured example.
+    expect(description).toMatch(
+      /A leading `_`, `\.` or `-` fails the shape check even though it is legal inside an UNQUOTED name, so `"_internal draft\.pdf"` is read as `draft\.pdf`/,
+    );
+    // Containment for the Unicode widening: a BARE name in a script with no word spaces is
+    // not extracted at all, and quoting is the supported route for it. Undisclosed until now.
+    expect(description).toMatch(
+      /A BARE name written in a script that does not separate words with spaces \(Han, Hiragana, Katakana, Thai, Lao, Khmer, Myanmar, Tibetan\) is not extracted at all \(`total: 0`\); quote it to have it checked/,
     );
     expect(description).toMatch(/Single quotes are NOT a delimiter/i);
 
@@ -331,9 +385,14 @@ describe("createServer verify_citations tool", () => {
     );
     expect(description).toMatch(/node id alone identifies nothing/i);
 
-    // --- the false-assurance guard: `total: 0` tied in the same breath to "not a clean bill
-    // of health" ---
-    expect(description).toMatch(/total`?:?\s*0[^.;]{0,200}not a clean bill of health/i);
+    // --- the false-assurance guard. Pinned as the WHOLE conjunction: the previous regex
+    // bound only the "not a clean bill of health" half, which is exactly why the other half
+    // ("NOT that the text is free of citations" - Spike A's actual finding, and the one
+    // CLAUDE.md forbids softening) could be deleted with the suite staying green. Both NOTs
+    // are pinned in one expression so neither can rot out alone. ---
+    expect(description).toMatch(
+      /`?total: 0`? means no citation of a recognized shape was found - NOT that the text is free of citations, and NOT a clean bill of health/,
+    );
     // --- combined page+node citation returns one verdict, AND its consequence (which half
     // failed is only knowable from `suggestion`) - pinned as one unit, not just the first
     // half ---
@@ -359,5 +418,65 @@ describe("createServer verify_citations tool", () => {
     const tool = (await mcpClient.listTools()).tools.find((t) => t.name === "verify_citations");
     const schema = tool?.inputSchema as { properties?: Record<string, { description?: string }> } | undefined;
     expect(schema?.properties?.["text"]?.description).toMatch(/draft text/i);
+  });
+});
+
+// CLAUDE.md used to tell a future agent that the disclosed limits "are pinned by assertions
+// in test/server.test.ts, which will fail if you do not [update both]". That was true of the
+// tool description and FALSE of the README: nothing in the suite read README.md, so a stale
+// README shipped green - which is exactly how the `total: 0` clause came to say one thing in
+// the description and another in the README.
+//
+// This closes that hole for SUBSTANCE only, deliberately not for formatting. Each assertion
+// below names a claim whose absence would mislead a human operator about what the code does,
+// and each has a counterpart assertion against the live tool description above, so the two
+// documents cannot drift on it. Wording, ordering, section layout and prose style are NOT
+// pinned: a rewrite that keeps every claim true stays green.
+describe("README states the load-bearing claims the tool description states", () => {
+  // Whitespace is collapsed before matching: the README is hard-wrapped, so any claim long
+  // enough to matter spans a line break, and pinning the break positions would make this a
+  // formatting test - re-wrapping a paragraph would fail it while every claim stayed true.
+  const readme = readFileSync(fileURLToPath(new URL("../README.md", import.meta.url)), "utf8").replace(/\s+/g, " ");
+
+  it("carries both halves of the `total: 0` guard", () => {
+    expect(readme).toMatch(
+      /`?total: 0`? means no citation of a recognized shape was found[^.]*- it is not a clean bill of health, and not proof the text has no citations/i,
+    );
+  });
+
+  it("says an `unresolved` verdict does not always mean a missing document", () => {
+    expect(readme).toMatch(/`unresolved` does not always mean the document is missing/i);
+    expect(readme).toMatch(/only `suggestion` distinguishes/i);
+  });
+
+  it("says a document name beside a URL inside the same bracket tag is still checked", () => {
+    expect(readme).toMatch(
+      /a `?<name>\.pdf`? elsewhere inside the same brackets[\s\S]{0,200}is still extracted and checked/i,
+    );
+  });
+
+  it("states the quoted-name shape rule including its leading character", () => {
+    expect(readme).toMatch(/begin(?:s|ning) with a letter or digit/i);
+  });
+
+  it("discloses that a citation glued to a URL by a sub-delimiter is dropped in every status", () => {
+    expect(readme).toMatch(/dropped in every status/i);
+  });
+
+  it("documents the https requirement on PAGEINDEX_BASE_URL and its loopback exception", () => {
+    expect(readme).toMatch(/PAGEINDEX_BASE_URL[\s\S]{0,400}https/i);
+    expect(readme).toMatch(/localhost[\s\S]{0,40}127\.0\.0\.1[\s\S]{0,40}\[::1\]/);
+  });
+
+  it("states that .pdf is the only recognized extension", () => {
+    expect(readme).toMatch(/only `?\.pdf`? documents are recognized/i);
+  });
+
+  it("discloses that a bare name in a script without word spaces is not extracted", () => {
+    expect(readme).toMatch(/does not separate words with spaces[\s\S]{0,300}quote/i);
+  });
+
+  it("tells the operator never to delete an `unchecked` citation", () => {
+    expect(readme).toMatch(/unchecked`? citation[\s\S]{0,120}(leave it in place|do not delete)/i);
   });
 });
