@@ -732,3 +732,296 @@ describe("extractCitations - a bare match that is part of a URL is not read as a
     ]);
   });
 });
+
+describe("extractCitations - a non-ASCII document name is extracted whole, never as a fragment (re-review fix: Critical 1)", () => {
+  // The name character class used to be ASCII-only, so the run was cut at the FIRST
+  // non-ASCII letter and the surviving fragment was emitted as though it were the document
+  // name: "rapport-général-2024.pdf" was checked as "ral-2024.pdf". The corpus cannot
+  // contain the fragment, so a correctly cited, existing document came back `unresolved`
+  // and a consuming agent deleted it (CLAUDE.md hard rule 4). Two things are pinned here:
+  // a truncated fragment is never emitted, and a real non-ASCII name is extracted whole.
+  it("extracts a name containing diacritics whole instead of truncating it at the first one", () => {
+    expect(extractCitations("Revenue is stated in rapport-général-2024.pdf for the year.")).toEqual([
+      {
+        token: "rapport-général-2024.pdf",
+        docName: "rapport-général-2024.pdf",
+        pages: null,
+        nodeId: null,
+      },
+    ]);
+  });
+
+  it("keeps two distinct names distinct instead of collapsing them into one shared fragment", () => {
+    // Dedup is by canonical token, so two names truncated to the same fragment used to
+    // collapse into ONE citation - the second document was reported in no status at all.
+    expect(extractCitations("See rapport-général.pdf and plan-général.pdf together.")).toEqual([
+      { token: "rapport-général.pdf", docName: "rapport-général.pdf", pages: null, nodeId: null },
+      { token: "plan-général.pdf", docName: "plan-général.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("extracts a name whose very first character is non-ASCII", () => {
+    expect(extractCitations("The source is Überblick.pdf and nothing else.")).toEqual([
+      { token: "Überblick.pdf", docName: "Überblick.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("extracts a name written in a non-Latin script whole", () => {
+    expect(extractCitations("The source is отчёт-2024.pdf and nothing else.")).toEqual([
+      { token: "отчёт-2024.pdf", docName: "отчёт-2024.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("binds a page marker to a non-ASCII name", () => {
+    expect(extractCitations("See rapport-général.pdf p.5 for details.")).toEqual([
+      {
+        token: "rapport-général.pdf#p5",
+        docName: "rapport-général.pdf",
+        pages: { from: 5, to: 5 },
+        nodeId: null,
+      },
+    ]);
+  });
+
+  it("takes a quoted non-ASCII name containing spaces verbatim", () => {
+    expect(extractCitations('The source is "Rapport Général 2024.pdf".')).toEqual([
+      {
+        token: "Rapport Général 2024.pdf",
+        docName: "Rapport Général 2024.pdf",
+        pages: null,
+        nodeId: null,
+      },
+    ]);
+  });
+
+  it("still requires a real name character before the extension in non-ASCII prose", () => {
+    // Containment check: widening the character class must not let ordinary prose that
+    // merely mentions the extension become a document name.
+    expect(extractCitations("Le document a été enregistré au format .pdf hier.")).toEqual([]);
+  });
+});
+
+describe("extractCitations - containment: a bare name in a script with no word spaces is not extracted (re-review fix: Critical 1)", () => {
+  // Widening the name class to Unicode letters is what stops a diacritic from truncating a
+  // name, but in a script that does not separate words with spaces there is no boundary for
+  // the greedy run to stop at, so it would swallow the whole clause and report THAT as the
+  // document name - "我们在这个文件里看到报告.pdf" - a token the author never wrote,
+  // reported `unresolved`, which is precisely the deletion CLAUDE.md hard rule 4 exists to
+  // prevent. Characters from those scripts therefore end the run, which leaves their
+  // behaviour exactly as it was before the widening: a bare name is not extracted at all
+  // (silence, the safe direction), and quoting is the supported, exact route.
+  it("does not read a bare no-space-script name as a document, rather than swallowing the clause", () => {
+    expect(extractCitations("詳細は年次報告書.pdf をご覧ください。")).toEqual([]);
+  });
+
+  it("extracts the same no-space-script name when it is quoted", () => {
+    expect(extractCitations('詳細は "年次報告書.pdf" をご覧ください。')).toEqual([
+      { token: "年次報告書.pdf", docName: "年次報告書.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("still extracts a space-delimited name glued directly to no-space-script text", () => {
+    expect(extractCitations("詳細はreport.pdf をご覧ください。")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+});
+
+describe("extractCitations - a bracket-tag id containing a .pdf-shaped substring stays unchecked (re-review fix: Critical 2)", () => {
+  // The bracket-tag path steps aside only when the value names a document as a WHOLE token.
+  // An id that merely CONTAINS a .pdf-shaped substring is a host-invented slug from a
+  // different id space, unverifiable by construction, and must be `unchecked` - exactly as
+  // the identical id written as "node_id: ..." already is. Reporting the substring
+  // `unresolved` makes a consuming agent delete a citation that was never checkable.
+  it("does not read a path-shaped bracket-tag id as a document", () => {
+    expect(extractCitations("[node: sub/chapter.pdf] confirms the figure.")).toEqual([
+      { token: "node_id:sub/chapter.pdf", docName: null, pages: null, nodeId: "sub/chapter.pdf" },
+    ]);
+  });
+
+  it("agrees with the node_id: path on the identical id", () => {
+    // The two syntaxes name the same id space; they must not disagree about the same id.
+    expect(extractCitations("[node: sub/chapter.pdf] confirms the figure.")).toEqual(
+      extractCitations("The pointer is node_id: sub/chapter.pdf here."),
+    );
+  });
+
+  it("does not read a .pdf-shaped prefix of a longer slug as a document", () => {
+    expect(extractCitations("[node: v1.pdf-part2] confirms the figure.")).toEqual([
+      { token: "node_id:v1.pdf-part2", docName: null, pages: null, nodeId: "v1.pdf-part2" },
+    ]);
+  });
+
+  it("does not read a .pdf-shaped substring with trailing characters as a document", () => {
+    expect(extractCitations("[node: report.pdfx]")).toEqual([
+      { token: "node_id:report.pdfx", docName: null, pages: null, nodeId: "report.pdfx" },
+    ]);
+  });
+
+  it("does not read a .pdf-shaped substring inside a dotted slug as a document", () => {
+    expect(extractCitations("[node: 2024.pdf.chunk3]")).toEqual([
+      { token: "node_id:2024.pdf.chunk3", docName: null, pages: null, nodeId: "2024.pdf.chunk3" },
+    ]);
+  });
+
+  it("does not read a .pdf-shaped substring with an uppercase extension as a document", () => {
+    expect(extractCitations("[node: a.PDF-thing]")).toEqual([
+      { token: "node_id:a.PDF-thing", docName: null, pages: null, nodeId: "a.PDF-thing" },
+    ]);
+  });
+
+  it("still steps aside for a value that names a document as a whole token (regression)", () => {
+    expect(extractCitations("[Source: report.pdf p.12]")).toEqual([
+      { token: "report.pdf#p12", docName: "report.pdf", pages: { from: 12, to: 12 }, nodeId: null },
+    ]);
+  });
+
+  it("still steps aside for a QUOTED name inside the tag - the boundary is an identifier, not whitespace", () => {
+    // Found while hunting for a victim of the boundary rule above: a first attempt that
+    // required whitespace on both sides made this `unchecked`. Quoting is exactly what this
+    // grammar tells a caller to do for a name containing a space, so a quoted name inside a
+    // bracket tag has to reach the ordinary passes and be checked.
+    expect(extractCitations('[cite: "Annual Report.pdf"]')).toEqual([
+      { token: "Annual Report.pdf", docName: "Annual Report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("treats a trailing period as sentence punctuation, not as an identifier continuation", () => {
+    expect(extractCitations("[cite: report.pdf.]")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("accepted limitation: a value carrying BOTH a slug and a document reports only the document", () => {
+    // The step-aside reserves nothing, so the slug is not reported in any status. Pinned
+    // rather than fixed: the slug is unverifiable either way, and the document inside the
+    // tag is a whole token that must be checked rather than hidden behind `unchecked`.
+    expect(extractCitations("[node: abc-123 report.pdf]")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+});
+
+describe("extractCitations - a citation glued to a preceding URL by a non-URL character (re-review fix: Important 3)", () => {
+  // The backward scan used to break on four ASCII whitespace characters only, so ANY other
+  // character gluing a real citation to a preceding URL put that citation inside the URL's
+  // run and dropped it in every status - absent from `details` entirely, which reads to a
+  // consuming agent as "nothing here needed checking". The run now ends at the first
+  // character no URL may contain, which covers the typographic characters that actually
+  // occur in generated prose.
+  it("extracts a document name separated from a URL by a non-breaking space", () => {
+    expect(
+      extractCitations("Mirror: https://example.com/x.html\u00A0report.pdf is the local copy."),
+    ).toEqual([{ token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null }]);
+  });
+
+  it("extracts a document name separated from a URL by an em dash, and still suppresses the URL's own tail", () => {
+    expect(
+      extractCitations("Mirror: https://example.com/doc.pdf—report.pdf is the local copy."),
+    ).toEqual([{ token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null }]);
+  });
+
+  it("extracts a document name separated from a URL by a typographic quote", () => {
+    expect(
+      extractCitations("Mirror: https://example.com/x.html”report.pdf is the local copy."),
+    ).toEqual([{ token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null }]);
+  });
+
+  it("disclosed limitation: a character a URL path MAY contain does not end the run", () => {
+    // ";" "," "(" ")" are all legal URL characters. Breaking the run on them would
+    // un-suppress the final path segment of any real URL that contains one earlier in its
+    // path (see the next test), turning a safe silence into a false `unresolved` that makes
+    // a consuming agent delete a valid reference. Silence is the safe direction here
+    // (CLAUDE.md hard rule 4), so this input stays dropped and is disclosed instead.
+    expect(
+      extractCitations("Mirror: https://example.com/doc.pdf;report.pdf is the local copy."),
+    ).toEqual([]);
+  });
+
+  it("keeps suppressing the final segment of a URL whose path contains a comma", () => {
+    expect(extractCitations("See https://example.com/w_100,h_200/report.pdf for details.")).toEqual(
+      [],
+    );
+  });
+});
+
+describe("extractCitations - extraction cost stays bounded on adversarial input (re-review follow-up)", () => {
+  // The text handed to this tool is UNTRUSTED: it is generated by a model, and a consuming
+  // host passes it straight through. A quadratic scan is therefore a denial of service
+  // handed to whoever writes the draft, not a benchmark curiosity - a stdio MCP server
+  // burning tens of seconds of CPU inside a host request is an outage, and an outage must
+  // never be mistaken for a verdict (CLAUDE.md hard rule 4). The document-name scan used to
+  // re-scan an unbroken run of name characters once per starting position inside it; it now
+  // only ever starts a match where the run itself starts, which makes the whole pass linear.
+  //
+  // The budget is wall-clock and deliberately loose: the measured cost of these inputs is a
+  // few milliseconds and 38k characters of ordinary prose carrying 400 citations costs
+  // under 10ms, so a 500ms ceiling leaves ~25x headroom for a loaded CI machine while still
+  // catching a return of the quadratic (which cost 22s and 1s respectively on these inputs).
+  const BUDGET_MS = 500;
+
+  function msToExtract(text: string, expected: number): number {
+    const started = performance.now();
+    const citations = extractCitations(text);
+    const elapsed = performance.now() - started;
+    expect(citations).toHaveLength(expected);
+    return elapsed;
+  }
+
+  it(
+    "scans a long unbroken run of non-ASCII name characters in bounded time",
+    () => {
+      // 20k characters, one unbroken run of allowed name characters, no citation anywhere
+      // in it - the worst case for a scan that restarts inside the run.
+      expect(msToExtract("ą.".repeat(10_000) + "x", 0)).toBeLessThan(BUDGET_MS);
+    },
+    60_000,
+  );
+
+  it(
+    "scans a long unbroken ASCII run in bounded time",
+    () => {
+      expect(msToExtract("a".repeat(20_000) + "!", 0)).toBeLessThan(BUDGET_MS);
+    },
+    60_000,
+  );
+
+  it(
+    "scans a long bracket-tag value in bounded time",
+    () => {
+      // The bracket-tag path runs the same document scan over the tag's value.
+      expect(msToExtract(`[node: ${"a".repeat(20_000)}]`, 1)).toBeLessThan(BUDGET_MS);
+    },
+    60_000,
+  );
+
+  it(
+    "scans a text made up of thousands of quoted names in bounded time",
+    () => {
+      // A second, independent quadratic: the reserved-span bookkeeping used to be scanned
+      // linearly per match, so cost grew with the NUMBER of citations rather than the length
+      // of the text. 20k quoted names in a 160k-character draft; they all dedupe to one
+      // citation, which is exactly why the cost was invisible in the output.
+      expect(msToExtract('"a.pdf" '.repeat(20_000), 1)).toBeLessThan(BUDGET_MS);
+    },
+    60_000,
+  );
+});
+
+describe("extractCitations - the URL exclusion covers the quoted pass too (re-review fix: Minor 4)", () => {
+  it("does not extract a backtick-delimited file name that is part of a URL", () => {
+    expect(extractCitations("See https://example.com/`report.pdf`")).toEqual([]);
+  });
+
+  it("does not extract a double-quoted file name that is part of a URL", () => {
+    expect(extractCitations('See https://example.com/"report.pdf"')).toEqual([]);
+  });
+
+  it("still extracts a quoted name when an unrelated URL appears elsewhere in the text", () => {
+    expect(
+      extractCitations('See https://example.com/context.pdf and then "Annual Report.pdf" here.'),
+    ).toEqual([
+      { token: "Annual Report.pdf", docName: "Annual Report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+});

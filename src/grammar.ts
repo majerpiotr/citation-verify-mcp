@@ -34,13 +34,65 @@ function ci(literal: string): string {
 
 const PDF_EXT = ci("pdf");
 
+// Re-review fix (Critical 1): the name character class is Unicode-aware, not ASCII-only.
+// It used to be [A-Za-z0-9_.-], which meant the greedy run was cut at the FIRST non-ASCII
+// letter and the surviving FRAGMENT was then checked as though it were the document name:
+// a real, existing "rapport-général-2024.pdf" was looked up as "ral-2024.pdf", came back
+// `unresolved`, and a consuming agent deleted a correctly cited document (CLAUDE.md hard
+// rule 4). Worse, two different names truncating to the same fragment deduped into one
+// citation, so the second document was reported in no status at all. A fragment must never
+// be emitted as a token, and the corpus this tool serves is not ASCII-only, so the class
+// admits Unicode letters, marks and digits alongside the punctuation already allowed.
+//
+// The extension itself is unchanged: still required, and still matched verbatim
+// case-insensitively per docs/spike-b-findings.md section 4 (lookups are case-sensitive, so
+// the NAME is never case-normalized).
+const NAME_CHARS = String.raw`\p{L}\p{M}\p{N}_\-`;
+
+// CONTAINMENT for the widening above. Widening a character class is how over-reach is born,
+// and this one has exactly one over-reach: a script that does not separate words with
+// spaces gives the greedy run no boundary to stop at, so it would swallow the whole
+// preceding clause and report THAT as the document name - "我们在这个文件里看到报告.pdf"
+// - a token the author never wrote, checked and reported `unresolved`, i.e. the deletion
+// hard rule 4 exists to prevent. Characters from those scripts therefore END the run, which
+// leaves their behaviour exactly as it was before the widening: a bare name in such a script
+// is not extracted at all (silence, the safe direction), while a space-delimited name glued
+// directly to such text still is. Quoting remains the supported, exact route for them - see
+// RE_QUOTED_DOC below, which deliberately carries NO script restriction. Scripts that do
+// separate words with spaces (Latin, Cyrillic, Greek, Hangul, Arabic, Devanagari, ...) are
+// all admitted, so this list needs no maintenance as new ones appear: anything not named
+// here behaves like Latin.
+const NO_SPACE_SCRIPTS = String.raw`\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Thai}\p{sc=Lao}\p{sc=Khmer}\p{sc=Myanmar}\p{sc=Tibetan}`;
+const NAME_CHAR = String.raw`(?![${NO_SPACE_SCRIPTS}])[${NAME_CHARS}]`;
+const NAME_OR_DOT_CHAR = String.raw`(?![${NO_SPACE_SCRIPTS}])[${NAME_CHARS}.]`;
+
+// Zero-width guard: a bare match may only START where its run of name characters starts,
+// i.e. where the preceding character could not have been part of the name. Two branches,
+// because a no-space-script character is a letter and so would satisfy the first lookbehind
+// while being excluded from the name class - it ENDS a run, so a match may start right
+// after it.
+//
+// This is behaviour-preserving, not a narrowing. The name class is greedy and unbounded, so
+// whenever a match exists starting inside a run, the same match (extended leftwards) also
+// exists starting at that run's first character - the engine simply reached it by a longer
+// route. What the guard removes is only that route: without it, every position inside a long
+// run was tried as a start, each one re-scanning the rest of the run, which made the pass
+// quadratic in the length of an unbroken run. That is a denial of service on input this tool
+// does not control - a model writes the draft - so it is a correctness concern for the
+// server's availability, not a micro-optimization. Measured on a 20k-character run:
+// 22s -> 4ms (non-ASCII), 983ms -> 4ms (ASCII). Pinned by the timing tests in
+// test/grammar.test.ts, and by a differential fuzz over ~200k random inputs that found no
+// behaviour difference.
+const NAME_RUN_START = String.raw`(?:(?<![${NAME_CHARS}.])|(?<=[${NO_SPACE_SCRIPTS}]))`;
+
 // A document name may itself contain dots (annual.report.pdf), but must end in at least
-// one real name character (letter/digit/_/-) right before the extension - not another dot
-// - so a stray "..pdf" with no actual name is never captured as a citation. The class is
+// one real name character (letter/mark/digit/_/-) right before the extension - not another
+// dot - so a stray "..pdf" with no actual name is never captured as a citation. The class is
 // greedy and the trailing extension forces the engine to backtrack to the LAST valid
 // ".pdf" in the run, so a dotted name is captured whole rather than truncated at the first
 // dot. Space is deliberately excluded, so a bare (unquoted) name can never span a word
-// boundary into neighbouring prose.
+// boundary into neighbouring prose. Every alternative is non-capturing, so embedding this
+// pattern never shifts a caller's group numbering.
 //
 // KNOWN, DELIBERATE LIMITATION: a bare name that itself contains a space (e.g. a real file
 // "Annual Report 2024.pdf") is unrecoverable from prose alone - "The source is Annual
@@ -50,7 +102,7 @@ const PDF_EXT = ci("pdf");
 // than resolved - never a false resolve, but a real citation to a space-bearing name goes
 // unverified unless it is quoted (see RE_QUOTED_DOC below, which IS exact). This gap must
 // be disclosed to the consuming agent in the tool description (a later task).
-const DOC_NAME_PATTERN = String.raw`[A-Za-z0-9_.\-]*[A-Za-z0-9_\-]\.${PDF_EXT}`;
+const DOC_NAME_PATTERN = String.raw`${NAME_RUN_START}(?:${NAME_OR_DOT_CHAR})*(?:${NAME_CHAR})\.${PDF_EXT}`;
 
 // A document name wrapped in double quotes or backticks is taken verbatim, spaces
 // included, and the delimiters are not part of the name. This is the supported way to
@@ -66,22 +118,30 @@ const QUOTE_DELIMITERS = ['"', "`"];
 // real name character before the extension. This alone is NOT sufficient to accept the
 // span as a document name - see isFileNameShaped below, which is what actually decides
 // whether a match is a citation or ordinary prose that happens to contain ".pdf".
+//
+// Unlike the BARE pattern above, this one carries no script restriction: a delimited name
+// is an explicit, exact statement by the author of where the name starts and ends, so there
+// is no run for a no-space script to swallow. Quoting is therefore the supported route for
+// exactly the names the bare pattern declines.
 function quotedNameFragment(delim: string): string {
-  return `${delim}([^${delim}]*[A-Za-z0-9_\\-]\\.${PDF_EXT})${delim}`;
+  return `${delim}([^${delim}]*[${NAME_CHARS}]\\.${PDF_EXT})${delim}`;
 }
 
 // One capturing group (the name) per delimiter alternative.
 const QUOTED_DOC_GROUP_STRIDE = 1;
-const RE_QUOTED_DOC = new RegExp(QUOTE_DELIMITERS.map(quotedNameFragment).join("|"), "g");
+const RE_QUOTED_DOC = new RegExp(QUOTE_DELIMITERS.map(quotedNameFragment).join("|"), "gu");
 
 // Re-review ruling: a structurally-matched quote is only ACCEPTED as a document name when
 // it is genuinely file-name-shaped, not merely because it ends in ".pdf" somewhere inside
 // a delimiter pair - an ordinary quotation ("the data comes from report.pdf") or a
 // markdown/code span can easily satisfy the structural pattern above without being a file
 // name. All four conditions must hold:
-//   - matches ^[A-Za-z0-9][A-Za-z0-9 ._-]*\.pdf$ (extension case-insensitive), i.e. starts
-//     with a real character, contains only name-shaped characters and spaces, and has no
-//     leading/trailing whitespace inside the delimiters (enforced by the anchors)
+//   - matches ^[letter or digit][name char, space or dot]*\.pdf$ (extension
+//     case-insensitive), i.e. starts with a real character, contains only name-shaped
+//     characters and spaces, and has no leading/trailing whitespace inside the delimiters
+//     (enforced by the anchors). Unicode-aware, matching the bare name class - an
+//     ASCII-only shape test would reject every non-ASCII name and silently push it back to
+//     the bare pass, which is exactly the fragment path this round removed.
 //   - at most MAX_DELIMITED_NAME_WORDS space-separated words
 //   - at most MAX_DELIMITED_NAME_CHARS characters
 // A REJECTED span is treated as if it were never quoted at all: it must not be added to
@@ -90,7 +150,10 @@ const RE_QUOTED_DOC = new RegExp(QUOTE_DELIMITERS.map(quotedNameFragment).join("
 // deleted valid citation in the probe that prompted this round.
 const MAX_DELIMITED_NAME_CHARS = 80;
 const MAX_DELIMITED_NAME_WORDS = 4;
-const RE_FILE_NAME_SHAPE = new RegExp(`^[A-Za-z0-9][A-Za-z0-9 ._-]*\\.${PDF_EXT}$`);
+const RE_FILE_NAME_SHAPE = new RegExp(
+  String.raw`^[\p{L}\p{N}][${NAME_CHARS} .]*\.${PDF_EXT}$`,
+  "u",
+);
 
 function isFileNameShaped(content: string): boolean {
   if (content.length === 0 || content.length > MAX_DELIMITED_NAME_CHARS) return false;
@@ -142,7 +205,7 @@ const RANGE_SEP = String.raw`(?:[ \t]*[-–][ \t]*|[ \t]+${ci("to")}[ \t]+)`;
 
 // Every bare (unquoted) document mention. Used both to emit doc-only citations and as one
 // source of anchors a node id can bind to (see the binding pass below).
-const RE_DOC = new RegExp(DOC_NAME_PATTERN, "g");
+const RE_DOC = new RegExp(DOC_NAME_PATTERN, "gu");
 
 // Whole-branch review fix (defect 1): a bare, unquoted match must not be read as a citable
 // document when it is actually the trailing segment of a URL, e.g.
@@ -173,15 +236,34 @@ const RE_DOC = new RegExp(DOC_NAME_PATTERN, "g");
 //     "://" is the one unambiguous signal available; both weaker forms are left unhandled
 //     rather than guessed at.
 //   - The rule only ever looks BACKWARD from a specific match, and only within its own
-//     unbroken non-whitespace run, so a URL appearing elsewhere in the text (a different
+//     unbroken URL-character run, so a URL appearing elsewhere in the text (a different
 //     run) never affects an unrelated, legitimate document mention.
+//
+// Re-review fix (Important 3): the run used to end only at one of four ASCII whitespace
+// characters, so ANY other character gluing a real citation to a preceding URL kept that
+// citation inside the URL's run and dropped it in EVERY status - not `unresolved`, not
+// `unchecked`, simply absent from the output, which reads to a consuming agent as "nothing
+// here needed checking". The run now ends at the first character that cannot appear in a
+// URL at all, which is what actually bounds a URL: every kind of Unicode whitespace
+// (U+00A0 in particular), dashes other than "-", typographic quotes, and the rest.
+//
+// DISCLOSED LIMITATION, deliberately not fixed: a character a URL path MAY legally contain
+// - ";", ",", "(", ")" and the other RFC 3986 sub-delimiters - does NOT end the run, so a
+// citation glued to a URL by one of them is still dropped. Breaking on them would
+// un-suppress the FINAL path segment of any real URL containing one earlier in its path
+// (".../w_100,h_200/report.pdf"), which is a common shape - turning a safe silence into a
+// false `unresolved` that makes a consuming agent delete a valid reference. Under CLAUDE.md
+// hard rule 4 silence is the safe direction here, so the gap is disclosed rather than
+// traded for a worse failure.
+//
+// Unicode letters/marks/digits continue the run too: an IRI path segment may contain them
+// unencoded, and cutting the run there would un-suppress the tail of a non-ASCII URL.
+const RE_URL_RUN_CHAR = /[\p{L}\p{M}\p{N}\-._~:\/?#\[\]@!$&'()*+,;=%]/u;
+
 function isUrlPrefixed(text: string, start: number): boolean {
   let i = start;
-  while (i > 0) {
-    const ch = text[i - 1];
-    if (ch === "\n" || ch === " " || ch === "\t" || ch === "\r") break;
-    i--;
-  }
+  // Non-global regex: `.test` carries no lastIndex state, so this is safe to call in a loop.
+  while (i > 0 && RE_URL_RUN_CHAR.test(text[i - 1])) i--;
   return text.slice(i, start).includes("://");
 }
 
@@ -219,7 +301,7 @@ const DOC_PAGE_SEP = String.raw`(?:[,;]?[ \t]*(?:${CONNECTOR_WORD}[ \t]+)?|[ \t]
 // than one.
 const RE_DOC_PAGE = new RegExp(
   String.raw`(${DOC_NAME_PATTERN})${DOC_PAGE_SEP}${PAGE_KEYWORD}[ \t]*(${PAGE_NUMBER})(?:${RANGE_SEP}(${PAGE_NUMBER}))?${CLOSE_BRACKET}`,
-  "g",
+  "gu",
 );
 
 // Reuses DOC_PAGE_SEP and CLOSE_BRACKET verbatim - the exact bug this fixes was that this
@@ -233,7 +315,7 @@ const RE_DOC_PAGE = new RegExp(
 // one of them.
 function quotedPageFragment(delim: string): string {
   return (
-    `${delim}([^${delim}]*[A-Za-z0-9_\\-]\\.${PDF_EXT})${delim}` +
+    `${delim}([^${delim}]*[${NAME_CHARS}]\\.${PDF_EXT})${delim}` +
     `${DOC_PAGE_SEP}${PAGE_KEYWORD}[ \\t]*(${PAGE_NUMBER})(?:${RANGE_SEP}(${PAGE_NUMBER}))?${CLOSE_BRACKET}`
   );
 }
@@ -244,7 +326,7 @@ function quotedPageFragment(delim: string): string {
 // QUOTED_PAGE_GROUP_STRIDE below rather than named groups, to avoid depending on the
 // "duplicate named capturing groups" proposal that not every supported engine has.
 const QUOTED_PAGE_GROUP_STRIDE = 3;
-const RE_QUOTED_DOC_PAGE = new RegExp(QUOTE_DELIMITERS.map(quotedPageFragment).join("|"), "g");
+const RE_QUOTED_DOC_PAGE = new RegExp(QUOTE_DELIMITERS.map(quotedPageFragment).join("|"), "gu");
 
 // node_id: <id> or node_id=<id>. The id charset intentionally includes characters (like
 // "." and "/") that can also be sentence punctuation or look like a path/extension;
@@ -271,16 +353,48 @@ const RE_NODE_ID = new RegExp(String.raw`${NODE_ID_KEYWORD}[:=]\s*([A-Za-z0-9_\-
 // later text.
 const RE_BRACKET_TAG = /\[[A-Za-z]+[ \t]*:[ \t]*([^\]\n]+)\]/gd;
 
-// Whole-branch review fix (defect 2): true when a bracket-tag's VALUE itself contains a
-// recognizable bare document name (RE_DOC-matchable). Determines whether the bracket-tag
-// loop below should step aside and let the ordinary document/page/node scans - which run
-// unconditionally over the whole text - read the real citation out of the value, instead of
-// reserving the span and reporting a synthetic, unverifiable "node_id:<raw value>" token.
+// Whole-branch review fix (defect 2), corrected by the re-review (Critical 2): true when a
+// bracket-tag's VALUE names a document as a WHOLE, standalone token. Determines whether the
+// bracket-tag loop below should step aside and let the ordinary document/page/node scans -
+// which run unconditionally over the whole text - read the real citation out of the value,
+// instead of reserving the span and reporting a synthetic "node_id:<raw value>" token.
+//
+// The boundary test is the whole point. RE_DOC has no trailing boundary, so a plain
+// "does it match anywhere" test returned true for any id that merely CONTAINED a
+// ".pdf"-shaped substring: "[node: sub/chapter.pdf]" stepped aside and the bare pass then
+// looked up "chapter.pdf" as a document and reported it `unresolved`, while the IDENTICAL
+// id written as "node_id: sub/chapter.pdf" correctly stayed `unchecked` (the node_id: path
+// reserves its captured span precisely to prevent this). Two syntaxes for the same id space
+// disagreeing about the same id, in the direction that makes a consuming agent delete an
+// unverifiable-by-construction citation, is exactly what CLAUDE.md hard rule 4 forbids.
+//
+// So the match must not be glued to a LONGER IDENTIFIER on either side: the character next
+// to it must not be one an identifier can continue with - a letter, mark, digit, "_", "-",
+// "/", or a "." that itself leads back into one of those (a trailing "." ending the value is
+// sentence punctuation, not a continuation). "report.pdf", "report.pdf p.12",
+// `"Annual Report.pdf"` and "see report.pdf, node_id: 0003" all qualify; "sub/chapter.pdf",
+// "v1.pdf-part2", "report.pdfx" and "2024.pdf.chunk3" do not, and stay `unchecked`.
+//
+// The test is deliberately "not part of a bigger identifier" rather than "surrounded by
+// whitespace": a stricter whitespace rule made "[cite: `"Annual Report.pdf"`]" `unchecked`,
+// which is the mirror failure - quoting is precisely what this grammar tells a caller to do
+// for a name containing a space, so a quoted name inside a bracket tag must reach the
+// ordinary passes and be CHECKED, not hidden behind docName: null.
+//
 // Uses matchAll (never .test()/.exec()) on the module-level `g` regex, per this grammar's
 // own rule, and matchAll is safe to call repeatedly / on a substring: it constructs its own
 // iterator per call rather than mutating RE_DOC's shared lastIndex.
-function containsDocName(value: string): boolean {
-  for (const _ of value.matchAll(RE_DOC)) return true;
+const RE_ID_CONTINUES_BEFORE = /[\p{L}\p{M}\p{N}_\-\/]\.*$/u;
+const RE_ID_CONTINUES_AFTER = /^\.*[\p{L}\p{M}\p{N}_\-\/]/u;
+
+function containsStandaloneDocName(value: string): boolean {
+  for (const m of value.matchAll(RE_DOC)) {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    if (RE_ID_CONTINUES_BEFORE.test(value.slice(0, start))) continue;
+    if (RE_ID_CONTINUES_AFTER.test(value.slice(end))) continue;
+    return true;
+  }
   return false;
 }
 
@@ -378,10 +492,22 @@ interface Instance {
   citation: Citation;
 }
 
-type Span = readonly [number, number];
+// Reserved-span bookkeeping: "has an earlier pass already claimed these characters?".
+//
+// This used to be an array of [start, end) pairs scanned linearly per query, which is
+// quadratic in the NUMBER of citations rather than the length of the text - a draft made up
+// mostly of quoted names cost 645 ms at 160k characters and grew 4x per doubling. Same
+// reasoning as the run-start guard on DOC_NAME_PATTERN: the text is untrusted, so cost has
+// to stay linear in it. A byte mask answers a query in time proportional to the MATCH
+// length, and marking every span is linear in the text. Behaviour is identical - all spans
+// here are non-empty (every capturing group behind them requires at least one character),
+// so "any marked byte in [start, end)" and "start < e && s < end" agree exactly.
+function reserveSpan(mask: Uint8Array, start: number, end: number): void {
+  mask.fill(1, start, end);
+}
 
-function overlapsAny(start: number, end: number, spans: readonly Span[]): boolean {
-  return spans.some(([s, e]) => start < e && s < end);
+function overlapsReserved(mask: Uint8Array, start: number, end: number): boolean {
+  return mask.subarray(start, end).indexOf(1) !== -1;
 }
 
 export function extractCitations(text: string): Citation[] {
@@ -393,13 +519,13 @@ export function extractCitations(text: string): Citation[] {
   // out of (Important 6) - "node_id: sub/chapter.pdf" must not let "chapter.pdf" be
   // discovered as a document, and neither must "[node:report.pdf]".
   const nodeMentions: NodeMention[] = [];
-  const idSpans: Span[] = [];
+  const idSpans = new Uint8Array(text.length);
   for (const m of text.matchAll(RE_NODE_ID)) {
     const start = m.index ?? 0;
     // `d` flag: exact span of the captured id group (group 1), not the whole
     // "node_id: ..." match - a document mentioned before the keyword must stay readable.
     const groupSpan = m.indices?.[1];
-    if (groupSpan) idSpans.push([groupSpan[0], groupSpan[1]]);
+    if (groupSpan) reserveSpan(idSpans, groupSpan[0], groupSpan[1]);
     const id = stripTrailingPunctuation(m[1]);
     // Nothing left after stripping (e.g. "node_id: ..."): not a citation. An empty id
     // must not become an empty nodeId, nor bind to (and thereby suppress) a real document
@@ -437,9 +563,14 @@ export function extractCitations(text: string): Citation[] {
     // documents only and must not attempt to resolve a web source. "://" is the simplest
     // defensible signal: every URL scheme actually in use (http, https, even a bare
     // "file://") includes it, an ordinary slug/id never does, and it needs no allowlist of
-    // schemes that could go stale as new ones appear. Checked FIRST, before the
-    // document-shape check below, because a URL's path segment can itself look
-    // document-shaped (".../doc.pdf") and must not be routed into that branch.
+    // schemes that could go stale as new ones appear.
+    //
+    // Re-review correction (Minor 5): an earlier comment here claimed the position of this
+    // check - before the document-shape check below - was load-bearing. It is not, and no
+    // test can make it so: BOTH checks take the identical action (step aside, reserving
+    // nothing and emitting nothing), so their relative order cannot change any output. It
+    // is written first only because a URL is the cheaper thing to recognize. What IS
+    // load-bearing is that both run BEFORE the reserve-and-emit code below.
     if (value.includes("://")) continue;
     // Whole-branch review fix (defect 2): previously this loop reserved the ENTIRE
     // captured value as an idSpan and always emitted an opaque `node_id:<raw value>`
@@ -453,10 +584,16 @@ export function extractCitations(text: string): Citation[] {
     // already scan the WHOLE text unconditionally, brackets or not - read the real citation
     // straight out of the value's own character span (this also lets a node_id: cited in
     // the same bracket bind to that document exactly as it would in ordinary prose). Only a
-    // value that is NOT document-shaped (an invented slug like "some-doc-id-123") keeps the
-    // original reserve-the-span-and-report-unchecked behavior.
-    if (containsDocName(value)) continue;
-    if (groupSpan) idSpans.push([groupSpan[0], groupSpan[1]]);
+    // value that does not name a document as a standalone token (an invented slug like
+    // "some-doc-id-123", or a path-shaped id like "sub/chapter.pdf") keeps the original
+    // reserve-the-span-and-report-unchecked behavior.
+    //
+    // Accepted consequence, pinned by test: when the value carries BOTH a slug and a
+    // standalone document ("[node: abc-123 report.pdf]"), the whole tag steps aside, so the
+    // slug is not reported in any status. The slug is unverifiable either way, whereas the
+    // document is a checkable claim that must not hide behind `unchecked`.
+    if (containsStandaloneDocName(value)) continue;
+    if (groupSpan) reserveSpan(idSpans, groupSpan[0], groupSpan[1]);
     instances.push({
       index: start,
       citation: { token: `node_id:${value}`, docName: null, pages: null, nodeId: value },
@@ -479,15 +616,27 @@ export function extractCitations(text: string): Citation[] {
     quotedPageByStart.set(start, { from: Number(from), to: to !== undefined ? Number(to) : Number(from) });
   }
 
-  const quotedSpans: Span[] = [];
+  const quotedSpans = new Uint8Array(text.length);
   const docMentions: DocMention[] = [];
   for (const m of text.matchAll(RE_QUOTED_DOC)) {
     const start = m.index ?? 0;
     const end = start + m[0].length;
     const full = delimiterGroup(m, QUOTED_DOC_GROUP_STRIDE, 1);
     if (full === undefined || !isFileNameShaped(full)) continue; // not a name: ignore the quote entirely
-    if (overlapsAny(start, end, idSpans)) continue;
-    quotedSpans.push([start, end]);
+    // Re-review fix (Minor 4): the URL exclusion used to be applied to the bare pass only,
+    // so a URL's own path segment was still extracted whenever it happened to be delimited
+    // ("https://example.com/`report.pdf`"). Both the README and the tool description state
+    // flatly that a URL's path segment is not extracted in any status, so the quoted pass
+    // has to honour the same rule. The span is still RESERVED (unlike a span rejected by
+    // isFileNameShaped above): dropping it silently would leave the bare match inside the
+    // delimiters free to be picked up by the bare pass, where the delimiter itself now ends
+    // the URL run - the exclusion would undo itself one pass later.
+    if (isUrlPrefixed(text, start)) {
+      reserveSpan(quotedSpans, start, end);
+      continue;
+    }
+    if (overlapsReserved(idSpans, start, end)) continue;
+    reserveSpan(quotedSpans, start, end);
     docMentions.push({ start, end, full, page: quotedPageByStart.get(start) ?? null });
   }
 
@@ -502,7 +651,7 @@ export function extractCitations(text: string): Citation[] {
   for (const m of text.matchAll(RE_DOC)) {
     const start = m.index ?? 0;
     const end = start + m[0].length;
-    if (overlapsAny(start, end, idSpans) || overlapsAny(start, end, quotedSpans)) continue;
+    if (overlapsReserved(idSpans, start, end) || overlapsReserved(quotedSpans, start, end)) continue;
     if (isUrlPrefixed(text, start)) continue; // defect 1: a URL's own path is not a document
     docMentions.push({ start, end, full: m[0], page: pageByStart.get(start) ?? null });
   }
