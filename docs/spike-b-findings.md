@@ -169,7 +169,31 @@ by a page or a node.
 - A bare `node_id:` with no document is **unverifiable by construction** and must be
   reported `unchecked`, never `unresolved`.
 
-## 7. Open items this spike does NOT settle
+## 7. Free-tier account limits, observed while populating a corpus
+
+These bind ingestion, not the read path this server uses. They are recorded here because
+they bind design constraint C1: the corpus must actually contain the documents an agent
+cites, or every citation resolves to `unresolved` for a reason that has nothing to do
+with fabrication.
+
+- A free account carries a **total quota of 200 pages across all stored documents**. It
+  is NOT a per-document page cap. Exceeding it fails the upload with
+  `403 {"detail":"LimitReached"}`.
+- The quota is checked against the whole submitted document, so a document that would
+  push the account past 200 pages is rejected outright rather than partially ingested.
+  Every rejection observed satisfied `pages_already_used + pages_in_document > 200`, and
+  none was explained by the document's own size: a 66-page document was accepted at 67
+  pages used, and a 29-page document was rejected at 200 pages used.
+- `POST /doc` rejects a `metadata` object carrying a null value:
+  `400 {"detail":"metadata value for '<key>' must be str, int, float, or bool"}`.
+- Ingestion is asynchronous. `POST /doc` returns `{"doc_id": ...}` at once and the
+  document reports `status: "processing"` until indexing finishes; `get_document` is
+  only meaningful once it reads `completed`.
+- The lookup key is the file name sent in the multipart `filename` field (section 4), so
+  the ingesting side decides, at upload time, what string a citation must reproduce
+  exactly. A corpus whose file names no agent can guess is unverifiable by construction.
+
+## 8. Open items this spike does NOT settle
 
 - **Spike A** still owns the question of which token shapes consuming agents actually
   emit. This spike settles what the backend accepts, not what agents write.
