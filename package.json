@@ -3,6 +3,24 @@
   "version": "0.0.1",
   "description": "MCP server that verifies whether agent citations resolve against PageIndex",
   "license": "MIT",
+  "author": "Piotr Majer",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/piotrMJ/citation-verify-mcp.git"
+  },
+  "homepage": "https://github.com/piotrMJ/citation-verify-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/piotrMJ/citation-verify-mcp/issues"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "citation-verification",
+    "hallucination-detection",
+    "pageindex",
+    "rag"
+  ],
   "type": "module",
   "bin": { "citation-verify-mcp": "dist/index.js" },
   "files": ["dist"],
