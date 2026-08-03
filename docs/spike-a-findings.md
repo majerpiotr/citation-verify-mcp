@@ -4,6 +4,22 @@
 > uses the same document backend (PageIndex) this tool targets. Read-only investigation;
 > nothing in that application's repository was modified.
 
+> ## HISTORICAL RECORD OF A MEASUREMENT, NOT A DESCRIPTION OF THE GRAMMAR
+>
+> The MEASUREMENTS below stand: they record what one real application's agents were
+> instructed to emit and what they actually emitted, and that is why this document is
+> worth reading before adopting the tool.
+>
+> Its statements about **what the grammar recognizes** do not. They describe
+> `src/grammar.ts` as it stood during the investigation, and this spike is the reason it
+> changed: the bracket-tag rule it reports as missing was added in response to these very
+> findings, and the grammar has been reworked repeatedly since. Read every present-tense
+> claim about the grammar here as "at the time of this spike".
+>
+> For what the grammar accepts today, the authority is `citation-grammar.md`, with the
+> tool description in `../src/server.ts` and `../README.md` as the other two user-facing
+> surfaces. Where they disagree with this document, they win.
+
 ## What was investigated
 
 A multi-agent application (source available for read-only inspection, not part of this

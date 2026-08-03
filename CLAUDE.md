@@ -1,5 +1,8 @@
 # citation-verify-mcp - project instructions
 
+Guidance for anyone working on this repository, human or agent. For how to *use* the
+server, read `README.md` instead.
+
 ## What this is
 
 A standalone, pluggable MCP server exposing one tool, `verify_citations`. It takes an
@@ -12,13 +15,15 @@ Authoritative documents, read before starting work, in this order:
 - `docs/spike-b-findings.md` - the OBSERVED behaviour of the backend, from probing the
   live service. Ground truth; it supersedes any document that disagrees with it.
 - `docs/spike-a-findings.md` - what a real consuming application actually emits. Read it
-  before assuming the grammar is useful in practice.
+  before assuming the grammar is useful in practice. Its measurements stand; its
+  present-tense claims about the grammar are historical (see its banner).
 - `docs/design.md` - the approved design, since revised against those findings.
-- `docs/rework-plan.md` - the rework the findings forced. Supersedes
-  `docs/implementation-plan.md` (the original task-by-task plan) where they conflict.
 - `docs/citation-grammar.md` - the published, exhaustive grammar reference. It is a
   USER-FACING surface, not background: several disclosed limits live only there, and
   `test/server.test.ts` pins them against it. Read it before changing `src/grammar.ts`.
+- `docs/rework-plan.md` and `docs/implementation-plan.md` - historical build records.
+  Both carry SUPERSEDED banners. Do not implement from them or cite them as current
+  behaviour.
 
 ## Hard rules
 
@@ -26,10 +31,11 @@ Authoritative documents, read before starting work, in this order:
    product, not part of anyone's app. Never mention a particular host application,
    its domain, its agents, or its repo in code, comments, docs, commits, or tests. Test
    fixtures use neutral names (`real-doc`, `some-doc-id-123`), never domain-specific ones.
-2. **`key.txt` holds a live PageIndex API key. Never print, echo, `cat`, copy, or commit
-   it, and never paste its value into code, docs, logs, or chat.** It is gitignored; keep
-   it that way. When a command needs it, pass it by substitution so the value never
-   appears in the command text or output:
+2. **Never commit, print, or paste an API key.** `key.txt` is gitignored and is the
+   conventional place to keep one locally; keep it that way. Never `cat`, echo, copy, or
+   log its contents, and never paste a key into code, docs, tests, logs, or a chat
+   transcript. When a command needs one, pass it by substitution so the value never
+   appears in the command text or its output:
    `PAGEINDEX_API_KEY="$(cat key.txt)" npx vitest run test/integration.test.ts`
 3. **Scope discipline (v0 = existence-only).** Do not add: database or any persistence,
    caching, gateway/post-processing pass, reuse detection, quote-overlap, grounding/NLI,
@@ -47,37 +53,24 @@ Authoritative documents, read before starting work, in this order:
    machine-readable delete-versus-fix signal, so an `unresolved` on a real document cited
    with a bad page or node must keep carrying its real name.
 5. **Git hygiene.** Always `git add <explicit paths>`, never `git add .` or `git add -A`.
-   Before every commit, confirm no secret is staged. There is no remote; never add one or
-   push without being asked.
+   Before every commit, confirm no secret is staged. Never force-push and never rewrite
+   published history.
 6. **English for all artifacts** (code, comments, docs, commit messages, tests).
 
-## Execution protocol
+## How to work on this
 
-Work through `docs/implementation-plan.md` task by task, in order. Each task is TDD:
-write the failing test, run it and see it fail, write the minimal implementation, run it
-and see it pass, commit. Do not skip the "see it fail" step - it is what proves the test
-is real. Mark checkboxes (`- [ ]` -> `- [x]`) as steps complete.
+Every change is TDD: write the failing test, run it and SEE IT FAIL, write the minimal
+implementation, run it and see it pass, commit. Do not skip the see-it-fail step - it is
+what proves the test is real. This project has repeatedly found tests that could not
+fail; if a test guards a load-bearing claim, mutate the implementation and confirm the
+test goes red.
 
-Per-task commits are pre-authorized by the approved plan. Anything beyond the plan's
-scope is not - ask first.
-
-Never claim a task is done without having run the tests and seen them pass. Paste the
+Never claim work is done without having run the tests and seen them pass. Paste the
 actual result; do not assert success from expectation.
 
-## Current state
+Keep commits scoped to one defect or one feature, with an explicit path list.
 
-- Git: branch `feature/citation-verify-core`, ~50 commits, no remote, nothing merged.
-- Node v24 present (>= 20 required). Dependencies installed. TypeScript 7.
-- The unit suite is fully offline and green; it builds against fake `DocLookup` and
-  `ToolCaller` implementations, so it needs no API key and no network.
-- `test/integration.test.ts` is credential-gated and skips cleanly without env. It has
-  been RUN against the live backend and passes, including the outage invariant.
-- **Both spikes are DONE.** Their findings drove a rewrite of the client, the grammar,
-  the resolver and the tool description. Do not treat the original
-  `docs/implementation-plan.md` code blocks as current - several of them contain defects
-  that were found and fixed.
-
-Settled facts you must not re-derive or contradict:
+## Settled facts you must not re-derive or contradict
 
 - The transport is an HTTP MCP endpoint, `https://api.pageindex.ai/mcp`, authenticated
   with `Authorization: Bearer <key>`. There is NO child process. The published
@@ -93,8 +86,7 @@ Settled facts you must not re-derive or contradict:
 - The key carries `remove_document` capability on the same connection. This server calls
   only read tools.
 
-Known limits, deliberately carried (see `.superpowers/sdd/implementation-plan/progress.md`
-for the full ledger and every operator ruling):
+## Known limits, deliberately carried
 
 - Spike A found that in the one real consuming application investigated, the citation
   format its agents were instructed to use appeared ZERO times in real output, and what
@@ -118,22 +110,41 @@ for the full ledger and every operator ruling):
   Neither block is exhaustive: a claim you add is only guarded once you add the assertion
   with it. Never delete an assertion to make a move compile - move it to the file the
   content moved to.
+- A page phrase that names its own owner (`page 12 of results.pdf`) binds to that owner,
+  not to a preceding document. The preposition list is closed at `of` and `in`; other
+  prepositions still bind left. Where binding is ambiguous the page is dropped rather
+  than attached to the wrong document, because a false `unresolved` is worse than a
+  silence.
 - No per-call timeout budget across a whole draft; the SDK's 60s per-request default is
   the only bound, and `verifyCitations` is sequential, so the bound multiplies by the
   number of distinct documents (disclosed in the README's known limits).
   `PAGEINDEX_FOLDER_ID` is not implemented.
-- The package is NOT published to npm and the repo has NO git remote. The README's
-  quick start therefore leads with a clone-and-build path and marks the `npx` form as
-  post-publication. Do not present the `npx` form as working today.
+- The package is NOT published to npm. The README's quick start therefore leads with a
+  clone-and-build path and marks the `npx` form as post-publication. Do not present the
+  `npx` form as working today.
 - A failed lookup writes one redacted, control-character-free, 400-char-capped line to
   stderr (`logLookupFailure` in `src/resolver.ts`). stdout is the MCP protocol stream and
   must never be written to (`test/stdout-safety.test.ts`).
 
+## Environment
+
+- The runtime floor is Node 20 (`engines`), verified by running the built server there.
+- The DEVELOPMENT floor is higher: Node 20.13.0. Below it `npm test` cannot run, because
+  vitest's bundler calls a `node:util` API that older 20.x releases reject. This is a
+  tooling limit, not a runtime one.
+- `test/integration.test.ts` is credential-gated and skips cleanly without env. It needs
+  BOTH `PAGEINDEX_API_KEY` and `CITATION_VERIFY_TEST_DOC_NAME` (plus
+  `CITATION_VERIFY_TEST_NODE_ID` for the node assertion); with only the key it reports a
+  clean skip that looks like a pass.
+- The unit suite is fully offline: it builds against fake `DocLookup` and `ToolCaller`
+  implementations, so it needs no API key and no network.
+
 ## Commands
 
 ```bash
-npm install                       # once, after Task 1 creates package.json
-npm test                          # full unit suite (offline)
+npm install                         # install dependencies (also builds, via `prepare`)
+npm test                            # full unit suite (offline)
 npx vitest run test/<file>.test.ts  # single test file
-npm run build                     # tsc -> dist/
+npm run typecheck                   # tsc --noEmit
+npm run build                       # clean + tsc -> dist/
 ```

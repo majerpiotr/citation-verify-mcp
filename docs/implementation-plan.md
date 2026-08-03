@@ -19,8 +19,6 @@
 > - `rework-plan.md` - the rework the findings forced (also historical; see its own banner)
 > - `../README.md` - how the shipped server actually behaves
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Build a standalone, pluggable MCP server (`verify_citations`) that deterministically checks whether an agent's citations resolve against PageIndex.
 
 **Architecture:** A Node/TypeScript MCP server on `@modelcontextprotocol/sdk`, distributed via `npx`. It extracts citation tokens from a draft text, resolves each against PageIndex by wrapping `pageindex-mcp` (spawned as a child MCP server), and returns a structured verdict (`resolved` / `unresolved` / `unchecked`). The core (grammar, resolver, server surface) depends on a `DocLookup` interface so it is unit-testable with a fake client; only the concrete PageIndex client touches the network.

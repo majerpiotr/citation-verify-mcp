@@ -117,9 +117,9 @@ describe("createServer verify_citations tool", () => {
 
   // The description is the only in-band instruction a consuming agent ever gets. Every
   // assertion below targets a SINGLE load-bearing clause with wording that appears nowhere
-  // else in the description - each one was mutation-tested individually (see
-  // .superpowers/sdd/implementation-plan/r4-report.md) to confirm it actually discriminates:
-  // deleting only the clause it guards fails that assertion while the rest stay green.
+  // else in the description - each one was mutation-tested individually to confirm it
+  // actually discriminates: deleting only the clause it guards fails that assertion while
+  // the rest stay green.
   // Traps specifically guarded against here:
   //   1. a clause restated more than once must have EVERY occurrence covered by wording
   //      specific enough that a single surviving occurrence can't save it (e.g. the
