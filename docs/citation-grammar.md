@@ -136,6 +136,27 @@ between them but a recognized separator:
   dropped and only the first page is checked.
 - A page marker on a different line from its document is not recognized.
 
+### A page phrase that names its own document binds to neither
+
+`of` or `in` followed by a document name states whose page it is, and that owner is not the
+name to its left. In `methods.pdf, see page 12 of results.pdf`, the page is **dropped**: both
+documents are extracted and checked, neither carries a page. The preposition list is closed
+(`of`, `in`), and an actual `<name>.pdf` - bare or quoted - must follow it, so the ordinary
+`report.pdf, page 3 of 40` and `report.pdf, page 12 of the appendix` still bind as before.
+
+Dropping is deliberate, and it is the same choice made everywhere else in this grammar.
+Binding the page to the document on the left is the worst outcome available: a `methods.pdf`
+with fewer than 12 pages comes back `unresolved` carrying a non-null `title` - the signal that
+means "this document is real, fix the page" - so a consuming agent corrupts a citation that
+was correct, while the genuine page-12 claim about `results.pdf` is reported `resolved` with
+its page never checked. Binding forward instead would be a second guess in the opposite
+direction. Dropping costs one page check, is visible as a citation with no page, and is
+recoverable: write the page against the name it belongs to (`results.pdf p.12`).
+
+Note that the connector `and` already behaved this way (`a.pdf and page 12 of b.pdf` never
+bound the page, because `and` is not in the connector list) - this makes `,`, `;` and the
+connector words agree with it rather than disagree.
+
 ## Node
 
 `node_id: <id>` or `node_id=<id>` (keyword case-insensitive), in either order relative to the
@@ -260,7 +281,8 @@ makes a real space-bearing file name checkable at all.
 - A page phrased as words ("page five"), a Roman numeral, or without one of the four page
   keywords.
 - A page marker separated from its document by more prose than the closed connector list
-  allows, or on a different line.
+  allows, or on a different line, or naming its own document with `of`/`in` (dropped rather
+  than bound to the preceding name).
 - A page range joined by an em dash character, the word "through", or anything other than a
   hyphen, en dash or "to" - truncated to its first page rather than dropped.
 - A document name with spaces, unquoted, or quoted but failing the file-name shape check -
@@ -320,6 +342,9 @@ Both directions are known, measured and carried deliberately. Neither is a bug r
 - A page marker on a different line from its document, or separated from it by more prose than
   the closed connector list allows, is not read as a page - the document alone is checked and
   the page claim goes unverified.
+- A page phrase that names its own document (`page 12 of results.pdf`) is dropped rather than
+  bound, so both documents are checked and the page claim goes unverified. That is the safe
+  half of a trade whose other half was a false `unresolved` on the document to its left.
 
 The connector-word list (`on`, `at`, `see`), the quoted-name shape limits and the bracket-tag
 keyword acceptance are fixed choices made without corpus evidence of what real agents write.

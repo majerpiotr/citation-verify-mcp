@@ -1346,6 +1346,108 @@ describe("extractCitations - the node_id: and bracket-tag paths agree when the i
   });
 });
 
+describe("extractCitations - a page phrase that names its own document does not bind to the preceding one (audit: Critical)", () => {
+  // The dangerous half of this is not the missing page. It is the page bound to the WRONG
+  // document: "methods.pdf, page 12 of results.pdf" used to report `methods.pdf#p12`, so a
+  // methods.pdf shorter than 12 pages came back `unresolved` carrying a non-null `title` -
+  // this project's machine-readable "the document is real, fix the page" signal - and a
+  // consuming agent then corrupted a citation that was correct. The other half is just as
+  // bad: the real page-12 claim about results.pdf was reported `resolved` with no page check
+  // at all, so a fabricated page number in the second document could never be caught.
+  //
+  // The ruling this fix follows (docs/citation-grammar.md, "the allowlist direction"): when
+  // binding is genuinely ambiguous, drop the page rather than guess an owner. Both documents
+  // are still checked; only the page claim goes unverified, which is a silence and is
+  // recoverable by rewriting the sentence.
+  const bothPlain = [
+    { token: "methods.pdf", docName: "methods.pdf", pages: null, nodeId: null },
+    { token: "results.pdf", docName: "results.pdf", pages: null, nodeId: null },
+  ];
+
+  it("does not bind a page across a comma when the page names a following document", () => {
+    expect(extractCitations("methods.pdf, see page 12 of results.pdf.")).toEqual(bothPlain);
+  });
+
+  it("does not bind a page across a bare comma when the page names a following document", () => {
+    expect(
+      extractCitations("As shown in methods.pdf, page 12 of results.pdf disagrees."),
+    ).toEqual(bothPlain);
+  });
+
+  it("does not bind a page across a semicolon when the page names a following document", () => {
+    expect(extractCitations("See methods.pdf; page 12 of results.pdf is clearer.")).toEqual(
+      bothPlain,
+    );
+  });
+
+  it("does not bind a page range that names a following document", () => {
+    expect(extractCitations("methods.pdf, pages 5 to 7 of results.pdf.")).toEqual(bothPlain);
+  });
+
+  it("treats 'in' as an owner preposition exactly like 'of'", () => {
+    expect(extractCitations("methods.pdf, page 12 in results.pdf.")).toEqual(bothPlain);
+  });
+
+  it("does not bind a page whose owner is named as a quoted document", () => {
+    expect(extractCitations('methods.pdf, page 12 of "Annual Report.pdf".')).toEqual([
+      { token: "methods.pdf", docName: "methods.pdf", pages: null, nodeId: null },
+      { token: "Annual Report.pdf", docName: "Annual Report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("does not bind a bracketed page marker whose owner is a following document", () => {
+    expect(extractCitations("methods.pdf (page 12 of results.pdf)")).toEqual(bothPlain);
+  });
+
+  it("applies the same rule to a quoted document name", () => {
+    expect(extractCitations('"Annual Report.pdf", page 12 of results.pdf.')).toEqual([
+      { token: "Annual Report.pdf", docName: "Annual Report.pdf", pages: null, nodeId: null },
+      { token: "results.pdf", docName: "results.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  // --- the regression fence: everything below already behaved correctly and must keep
+  // behaving correctly. "of" followed by anything that is not a document name is ordinary
+  // prose about the SAME document, and binding it there is the whole point of the feature.
+  it("still binds a page followed by 'of' plus a plain count", () => {
+    expect(extractCitations("methods.pdf, page 3 of 40.")).toEqual([
+      { token: "methods.pdf#p3", docName: "methods.pdf", pages: { from: 3, to: 3 }, nodeId: null },
+    ]);
+  });
+
+  it("still binds a page followed by 'of' plus ordinary prose", () => {
+    expect(extractCitations("methods.pdf, page 12 of the appendix.")).toEqual([
+      {
+        token: "methods.pdf#p12",
+        docName: "methods.pdf",
+        pages: { from: 12, to: 12 },
+        nodeId: null,
+      },
+    ]);
+  });
+
+  it("still binds a plain comma-separated page (regression fence)", () => {
+    expect(extractCitations("methods.pdf, page 12.")).toEqual([
+      {
+        token: "methods.pdf#p12",
+        docName: "methods.pdf",
+        pages: { from: 12, to: 12 },
+        nodeId: null,
+      },
+    ]);
+  });
+
+  it("still leaves both documents unpaged when the connector is not in the closed list", () => {
+    expect(extractCitations("Compare methods.pdf and page 12 of results.pdf.")).toEqual(bothPlain);
+  });
+
+  it("still reports a page-led citation to a single document with no page", () => {
+    expect(extractCitations("See page 12 of results.pdf.")).toEqual([
+      { token: "results.pdf", docName: "results.pdf", pages: null, nodeId: null },
+    ]);
+  });
+});
+
 describe("extractCitations - a reserved span that merely TOUCHES a document match does not suppress it (final review: Minor 8.1)", () => {
   // The reserved-span rewrite replaced a [start, end) pair list with a byte mask, and the one
   // semantic it had to preserve - overlap suppresses, adjacency does not - was pinned by

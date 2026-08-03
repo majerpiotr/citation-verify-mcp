@@ -356,14 +356,64 @@ function isUrlPrefixed(urlScheme: Uint8Array, start: number): boolean {
 // include `\n`) - the newline restriction below is what stops a page marker on a LATER
 // line from binding to a document on an EARLIER one, and widening this separator must not
 // reopen that. The connector list being closed - not "any word" - is what stops the
-// separator from spanning an intervening document mention: "a.pdf and b.pdf on page 5"
-// fails to match starting at "a.pdf" (the mandatory whitespace right after a connector
+// separator itself from spanning an intervening document mention: "a.pdf and b.pdf on page
+// 5" fails to match starting at "a.pdf" (the mandatory whitespace right after a connector
 // attempt can't reach past "and", which isn't in the list), so it can only match starting
 // at "b.pdf".
+//
+// That is NOT the same guarantee as "the page belongs to the document on the left", and an
+// audit found the gap: nothing between "methods.pdf" and "page 12" in "methods.pdf, page 12
+// of results.pdf" is a document name, so the separator matched and the page bound to the
+// WRONG document. See PAGE_OWNER_PREPOSITION below for the guard that closes it - the
+// separator rule alone never could, because the evidence sits on the far side of the page
+// number.
 const CONNECTOR_WORD = String.raw`\b(?:${ci("on")}|${ci("at")}|${ci("see")})\b`;
 const OPEN_BRACKET = String.raw`[(\[]`;
 const CLOSE_BRACKET = String.raw`[)\]]?`;
 const DOC_PAGE_SEP = String.raw`(?:[,;]?[ \t]*(?:${CONNECTOR_WORD}[ \t]+)?|[ \t]*${OPEN_BRACKET}[ \t]*)`;
+
+// Audit fix (Critical): a page phrase can name the document it belongs to, and when it does,
+// that document is the owner - not whatever name happens to sit to its left. "methods.pdf,
+// see page 12 of results.pdf" used to report `methods.pdf#p12`, which is the worst shape of
+// failure this tool has: if methods.pdf is shorter than 12 pages the citation comes back
+// `unresolved` carrying a NON-NULL `title` - the machine-readable "this document is real,
+// fix the page" signal (CLAUDE.md hard rule 4) - so a consuming agent corrupts a citation
+// that was correct. The other half is the mirror image: the genuine page-12 claim about
+// results.pdf was reported `resolved` with its page never checked, so a fabricated page
+// number in the second document could not be caught at all.
+//
+// The fix DROPS the page rather than re-binding it forward. Binding forward would be a
+// second, opposite guess in a position where the grammar has no evidence for either
+// (docs/citation-grammar.md, "the allowlist direction": a false `unresolved` deletes correct
+// work, a silence does not and is recoverable by rewriting the sentence). Both documents are
+// still extracted and checked; only the page claim goes unverified, exactly as it already
+// did for the connector this rule was measured against - "a.pdf and page 12 of b.pdf" has
+// always dropped the page, and this makes "," and ";" agree with "and" instead of
+// disagreeing with it.
+//
+// The preposition list is CLOSED, for the same reason the connector list is: "of" and "in"
+// are the two forms that name a container, and requiring an actual document name after them
+// is what keeps the ordinary "page 3 of 40" and "page 12 of the appendix" binding as before.
+// A quoted owner is matched structurally only (no isFileNameShaped check): the guard's job
+// is to withhold a binding, so admitting a slightly wider set of owners errs towards the
+// silence this whole rule prefers.
+const PAGE_OWNER_PREPOSITION = String.raw`(?:${ci("of")}|${ci("in")})`;
+const QUOTED_DOC_AHEAD = QUOTE_DELIMITERS.map(
+  (delim) => `${delim}[^${delim}]*[${NAME_CHARS}]\\.${PDF_EXT}${delim}`,
+).join("|");
+// Sticky, never global: it is asked "does an owner start exactly here?" at the end of a page
+// match, so it must not be allowed to go looking further down the text. Cost is bounded by
+// the length of the name run it lands on, and the runs it scans are disjoint from one
+// another, so applying it once per page match stays linear in the text.
+const RE_PAGE_OWNER_FOLLOWS = new RegExp(
+  String.raw`[ \t]+${PAGE_OWNER_PREPOSITION}[ \t]+(?:${DOC_NAME_PATTERN}|${QUOTED_DOC_AHEAD})`,
+  "yu",
+);
+
+function pageOwnerFollows(text: string, matchEnd: number): boolean {
+  RE_PAGE_OWNER_FOLLOWS.lastIndex = matchEnd;
+  return RE_PAGE_OWNER_FOLLOWS.test(text);
+}
 
 // A document followed by a page marker on the SAME LINE, separated by DOC_PAGE_SEP above -
 // no other words beyond the closed connector list, and never a newline. Judgment call
@@ -713,6 +763,10 @@ export function extractCitations(text: string): Citation[] {
     const name = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 1);
     const from = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 2);
     if (name === undefined || from === undefined || !isFileNameShaped(name)) continue;
+    // The page names its own document, which is not this one: drop the page (the quoted
+    // name is still extracted by the pass below, just without it). See
+    // PAGE_OWNER_PREPOSITION.
+    if (pageOwnerFollows(text, start + m[0].length)) continue;
     const to = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 3);
     quotedPageByStart.set(start, { from: Number(from), to: to !== undefined ? Number(to) : Number(from) });
   }
@@ -745,9 +799,13 @@ export function extractCitations(text: string): Citation[] {
   // identifier's own text or by a quoted name covering the same span.
   const pageByStart = new Map<number, { from: number; to: number }>();
   for (const m of text.matchAll(RE_DOC_PAGE)) {
+    const start = m.index ?? 0;
+    // Same rule as the quoted pass above: a page phrase that names its OWN document binds to
+    // neither, so the document here is emitted with no page rather than with the wrong one.
+    if (pageOwnerFollows(text, start + m[0].length)) continue;
     const from = Number(m[2]);
     const to = m[3] !== undefined ? Number(m[3]) : from;
-    pageByStart.set(m.index ?? 0, { from, to });
+    pageByStart.set(start, { from, to });
   }
   for (const { start, end, full } of docMatches) {
     if (overlapsReserved(idSpans, start, end) || overlapsReserved(quotedSpans, start, end)) continue;

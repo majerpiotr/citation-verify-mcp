@@ -405,7 +405,10 @@ The grammar is fixed, not learned, and deliberately narrow. In summary:
   case-insensitively.)
 - **A page is optional**, and must follow its document on the same line, introduced by `p.`,
   `pp.`, `page` or `pages`: `report.pdf p.3`, `report.pdf (pages 5 to 7)`. A page on a
-  different line, or phrased in words ("page five"), is not read.
+  different line, or phrased in words ("page five"), is not read. **A page phrase that names
+  its own document** - `of` or `in` followed by a `.pdf` name, as in `methods.pdf, page 12 of
+  results.pdf` - binds to neither: the page is dropped and both documents are checked without
+  it, rather than the page being bound to the wrong document.
 - **A node is optional**: `node_id: 0007` or `node_id=0007` binds to the nearest document
   mentioned in the same sentence, in either order. A document cited with both a page and a
   node produces one combined citation, not two.
@@ -487,6 +490,12 @@ Known and carried deliberately.
   extracted at all; quote it to have it checked. A space-bearing name that fails the quoted
   shape check is dropped entirely or read as a shorter fragment and checked as a different
   document.
+- **A page claim can go unverified while its document is still checked.** A page phrase that
+  names its own document (`page 12 of results.pdf`) is dropped rather than bound, because the
+  document to its left is not its owner and binding it there would report a real document as
+  `unresolved` on a page it never had. The two documents are still checked; the page claim is
+  not. Cite the page directly after the name it belongs to (`results.pdf p.12`) to have it
+  verified.
 - **`unchecked` where a check was possible:** `[node:report.pdf]` and `node_id:report.pdf`
   written with no space after the colon report an `unchecked` node id instead of checking the
   document. Safe (an `unchecked` citation is never deleted) but not what the author meant.

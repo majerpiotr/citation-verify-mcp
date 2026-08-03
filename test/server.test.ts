@@ -290,7 +290,26 @@ describe("createServer verify_citations tool", () => {
       /either glued directly, after `,`\/`;`, after a connector \(`on`\/`at`\/`see`\)/,
     );
     expect(description).toMatch(/inside `\(\)`\/`\[\]`/);
-    expect(description).toMatch(/on the SAME LINE, with no other document name in between/i);
+    // The separator clause makes TWO claims and only ever guarded one of them. "No other
+    // document name in between" is a statement about the characters BETWEEN the name and the
+    // page keyword, and it was true of the separator all along - but the evidence that the
+    // page belongs to somebody else sits on the FAR side of the page number ("methods.pdf,
+    // page 12 of results.pdf"), where that clause never looked. The second half is pinned
+    // with the first so the guarantee cannot be read as broader than the code delivers.
+    expect(description).toMatch(
+      /on the SAME LINE, with no other document name in between and none named by the page phrase itself/i,
+    );
+    // --- audit fix (Critical): a page phrase naming its own document binds to NEITHER.
+    // Pinned as one conjunction - the trigger (`of`/`in` plus a name), the worked example,
+    // the "binds to NEITHER" verdict, and the "rather than the document on its left"
+    // correction - because the rule without the correction reads as a mere omission, when
+    // what it actually prevents is a page bound to the wrong document (a false `unresolved`
+    // carrying a non-null `title`, i.e. the fix-do-not-delete signal, on a citation that was
+    // correct). The recovery instruction is pinned too: a dropped page is silent, and a
+    // silence is only recoverable if the reader is told how.
+    expect(description).toMatch(
+      /A page phrase that names its OWN document - `of` or `in` plus a `<name>\.pdf`, as in `methods\.pdf, page 12 of results\.pdf` - binds to NEITHER document: the page is dropped and both are checked without it, rather than the page being bound to the document on its left\. Write the page against the name it belongs to \(`results\.pdf p\.12`\) to have it verified\./,
+    );
 
     // --- final-fix Fix 1: node binding is NOT governed by the page separator rule above -
     // a node binds to the nearest document mention anywhere in the SAME SENTENCE, either
@@ -590,6 +609,18 @@ describe("the prose documentation states the load-bearing claims the tool descri
   it("discloses in both files that a bare name in a script without word spaces is not extracted", () => {
     expect(readme).toMatch(/does not separate words with spaces[\s\S]{0,300}quote/i);
     expect(grammarDoc).toMatch(/does not separate words with spaces[\s\S]{0,300}quote/i);
+  });
+
+  it("discloses in both files that a page naming its own document is dropped, not bound", () => {
+    // The counterpart of the tool-description assertion above, for the two human-facing
+    // surfaces. Substance only: each file must state the trigger (`of`/`in` plus a document
+    // name) and the outcome (neither document carries the page), in whatever words it uses.
+    expect(readme).toMatch(
+      /page phrase that names\s+its own document[\s\S]{0,300}binds to neither/i,
+    );
+    expect(grammarDoc).toMatch(
+      /A page phrase that names its own document binds to neither[\s\S]{0,600}the page is \*\*dropped\*\*/i,
+    );
   });
 
   it("discloses in both files that a citation glued to a URL by a sub-delimiter is dropped in every status", () => {

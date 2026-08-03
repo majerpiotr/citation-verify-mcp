@@ -53,12 +53,18 @@ export function createServer(client: DocLookup): McpServer {
         "ONLY recognized extension (a name ending in any other, e.g. `report.docx`, is " +
         "not extracted at all); page and node keywords case-insensitive: a document " +
         "written as `<name>.pdf`, matched CASE-SENSITIVELY; optionally followed - on the " +
-        "SAME LINE, with no other document name in between, either glued directly, after " +
+        "SAME LINE, with no other document name in between and none named by the page " +
+        "phrase itself, either glued directly, after " +
         "`,`/`;`, after a connector (`on`/`at`/`see`), or inside `()`/`[]` - by a page " +
         "(`p.5`, `pp. 5-7`, `page 12`, `pages 5 to 7`). A range needs a hyphen, en dash, " +
         'or spaced "to" - any other separator (e.g. an em dash) silently truncates to ' +
         "the first page instead of the range; a page in no recognized form at all is " +
         "simply not checked. " +
+        "A page phrase that names its OWN document - `of` or `in` plus a `<name>.pdf`, as " +
+        "in `methods.pdf, page 12 of results.pdf` - binds to NEITHER document: the page is " +
+        "dropped and both are checked without it, rather than the page being bound to the " +
+        "document on its left. Write the page against the name it belongs to " +
+        "(`results.pdf p.12`) to have it verified. " +
         "`node_id: <id>` or `node_id=<id>` binds instead to the NEAREST document " +
         "mention anywhere in the SAME SENTENCE, either order, with no separator " +
         "constraint at all; if the nearest is the wrong one, use separate sentences. " +
