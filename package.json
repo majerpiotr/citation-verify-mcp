@@ -39,7 +39,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "dev": "tsx src/index.ts",
-    "prepublishOnly": "npm run build"
+    "prepare": "npm run build"
   },
   "engines": { "node": ">=20" },
   "dependencies": {
