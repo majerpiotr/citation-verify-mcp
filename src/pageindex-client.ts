@@ -1,7 +1,8 @@
 // src/pageindex-client.ts
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { isUsableApiKey } from "./api-key.js";
+import { describeStartupFailure, isUsableApiKey } from "./api-key.js";
+import { SERVER_VERSION } from "./version.js";
 
 export interface DocumentInfo {
   name: string;
@@ -17,6 +18,12 @@ export interface DocLookup {
   // Only called when a node was actually cited. THROWS when the check could not run.
   getNodeIds(docName: string): Promise<Set<string>>;
 }
+// CONTRACT for every implementation of DocLookup, not just the one below: the message of
+// an error it throws MUST be free of secrets. The resolver writes that message to stderr
+// (which an MCP host captures into its log files) because it is the only signal an
+// operator gets when a check could not run - and the resolver holds no API key, so it
+// cannot redact one. `PageindexHttpClient` honours this via sanitizeLookupError, at the
+// one place the key is in scope.
 
 const DEFAULT_BASE_URL = "https://api.pageindex.ai/mcp";
 
@@ -293,11 +300,38 @@ export interface ToolCaller {
   callTool(params: { name: string; arguments: Record<string, unknown> }): Promise<unknown>;
 }
 
+// Bound on a rendered lookup failure. The resolver caps its own log line as well; this cap
+// exists so the message is already bounded wherever else it is handled.
+const MAX_ERROR_CHARS = 400;
+
+// PURE. Renders a caught error as a message that is safe to hand on to a caller which will
+// print it: `secret` is scrubbed out of every level of the cause chain, and the result is
+// length-capped.
+//
+// This is where redaction has to happen. The API key exists in exactly two scopes - the
+// local variable in src/index.ts and the `apiKey` parameter of `connect` below - and an
+// error raised while sending a request can quote the `Authorization` header value
+// verbatim. Every layer above this one (the resolver, the tool handler) deliberately does
+// not know the key, so none of them could remove it. `describeStartupFailure` already does
+// exactly this rendering (name plus redacted message per level, never a stack, never an
+// error's enumerable properties, with a depth cap and cycle protection); it is reused
+// rather than reimplemented so there is one redaction routine to audit, not two.
+export function sanitizeLookupError(err: unknown, secret: string): string {
+  const rendered = describeStartupFailure(err, secret);
+  return rendered.length > MAX_ERROR_CHARS ? `${rendered.slice(0, MAX_ERROR_CHARS)}...` : rendered;
+}
+
 // Concrete client. Connects to the PageIndex HTTP MCP endpoint and dispatches
 // get_document / get_document_structure. Network glue - exercised by
 // test/integration.test.ts, not the unit suite (docs/spike-b-findings.md section 1).
 export class PageindexHttpClient implements DocLookup {
-  private constructor(private readonly client: ToolCaller) {}
+  // `sanitize` closes over the connection's API key (see `connect`) without storing it as a
+  // field, so every error leaving this object is scrubbed of it - the DocLookup contract
+  // stated above the interface.
+  private constructor(
+    private readonly client: ToolCaller,
+    private readonly sanitize: (err: unknown) => string,
+  ) {}
 
   static async connect(apiKey: string): Promise<PageindexHttpClient> {
     // The key guard lives HERE, not only in the binary's entry point, because this is
@@ -326,9 +360,9 @@ export class PageindexHttpClient implements DocLookup {
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers: { Authorization: `Bearer ${apiKey}` } },
     });
-    const client = new Client({ name: "citation-verify", version: "0.0.1" });
+    const client = new Client({ name: "citation-verify", version: SERVER_VERSION });
     await client.connect(transport);
-    return new PageindexHttpClient(client);
+    return new PageindexHttpClient(client, (err) => sanitizeLookupError(err, apiKey));
   }
 
   // Test-only construction path: builds an instance around an injected ToolCaller
@@ -339,28 +373,47 @@ export class PageindexHttpClient implements DocLookup {
   // interpretGetDocument turns into a thrown error, so every citation becomes
   // `unchecked` forever while the rest of the unit suite stays green.
   static forTesting(caller: ToolCaller): PageindexHttpClient {
-    return new PageindexHttpClient(caller);
+    // No key is involved on this path, so there is nothing to redact - the empty secret
+    // makes sanitizeLookupError a pure rendering, and the length cap still applies.
+    return new PageindexHttpClient(caller, (err) => sanitizeLookupError(err, ""));
+  }
+
+  // Re-throws with a sanitized message rather than the original error. Deliberately WITHOUT
+  // `cause`: attaching the original would put the unredacted message back within reach of
+  // anything that walks the chain. The throw itself is preserved exactly - it is what makes
+  // the citation `unchecked` instead of `unresolved` (CLAUDE.md hard rule 4) - and nothing
+  // here can turn a failure into a verdict.
+  private fail(err: unknown): never {
+    throw new Error(this.sanitize(err));
   }
 
   async getDocument(docName: string): Promise<DocLookupResult> {
-    const res = await this.client.callTool({
-      name: "get_document",
-      // NOTE: the argument is `doc_name` (a case-sensitive file name including
-      // extension), NOT `doc_id` - passing `doc_id` is a validation error
-      // (docs/spike-b-findings.md section 4).
-      arguments: { doc_name: docName },
-    });
-    return interpretGetDocument(res);
+    try {
+      const res = await this.client.callTool({
+        name: "get_document",
+        // NOTE: the argument is `doc_name` (a case-sensitive file name including
+        // extension), NOT `doc_id` - passing `doc_id` is a validation error
+        // (docs/spike-b-findings.md section 4).
+        arguments: { doc_name: docName },
+      });
+      return interpretGetDocument(res);
+    } catch (err) {
+      this.fail(err);
+    }
   }
 
   async getNodeIds(docName: string): Promise<Set<string>> {
-    return accumulateNodeIds(docName, (part) =>
-      this.client.callTool({
-        name: "get_document_structure",
-        // `doc_name`, matching get_document - see the NOTE above. `part` is 1-based
-        // (docs/spike-b-findings.md section 5).
-        arguments: { doc_name: docName, part },
-      }),
-    );
+    try {
+      return await accumulateNodeIds(docName, (part) =>
+        this.client.callTool({
+          name: "get_document_structure",
+          // `doc_name`, matching get_document - see the NOTE above. `part` is 1-based
+          // (docs/spike-b-findings.md section 5).
+          arguments: { doc_name: docName, part },
+        }),
+      );
+    } catch (err) {
+      this.fail(err);
+    }
   }
 }

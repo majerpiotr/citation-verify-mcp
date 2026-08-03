@@ -15,6 +15,14 @@ export type CitationStatus = "resolved" | "unresolved" | "unchecked";
 export interface CitationDetail {
   token: string;
   status: CitationStatus;
+  // The real file name of the cited document, and the ONE machine-readable answer to
+  // "does the cited document exist?": non-null if and only if the backend positively
+  // confirmed the document, whatever the status ends up being. So an `unresolved` with a
+  // title is a REAL document cited with a wrong page or a wrong node (fix the citation,
+  // keep the claim), while an `unresolved` with `title: null` names nothing that exists
+  // (find the real source, or delete the claim). Those two demand opposite actions, and
+  // before this field carried the difference it survived only in the English `suggestion`
+  // text, which a consuming model has to read correctly.
   title: string | null;
   suggestion: string | null; // e.g. a near-miss document name, or the real page count
 }
@@ -51,6 +59,71 @@ export const NO_NEAR_MATCH_SUGGESTION =
   "differing only in capitalisation misses silently, with no hint. Look up the document's " +
   "actual file name in the corpus before removing or rewriting this citation; do not guess " +
   "at alternative capitalisations.";
+
+// The dominant production failure: the backend is unreachable, the credential was
+// rejected, or the response could not be read. It used to return `suggestion: null`, which
+// told a consuming agent nothing about why the citation was not checked - on the one path
+// where that matters most, and while the README promises this field explains exactly that.
+//
+// STATIC on purpose, and this is the load-bearing part: a thrown error is UNTRUSTED text.
+// A transport error can quote an `Authorization` header verbatim, and this string is
+// handed straight to a model, so rendering the error here would risk putting a live
+// credential into a model's context. The resolver deliberately does not know the API key
+// (that would be the wrong module to hold it), so it could not redact one out even if it
+// tried. Redaction can only happen where the secret is in scope - see logLookupFailure.
+// A constant also keeps the field bounded, which a backend's error message is not.
+// It does not change the verdict; the token stays `unchecked`.
+const DOC_UNCHECKED_SUGGESTION =
+  "This document could not be checked at all: the lookup failed (for example the corpus " +
+  "was unreachable, the server's credential was rejected, or the response could not be " +
+  "read). That is NOT evidence that the document is missing, so do not delete this " +
+  "citation - leave it and check again later. The specific failure is written to the " +
+  "server's stderr log rather than reported here.";
+
+// Bound on one diagnostic line written to stderr. An MCP host captures this server's
+// stderr into its log files, so a huge response body must not flood them.
+const MAX_LOG_LINE_CHARS = 400;
+
+// Renders untrusted text as a single printable line: control characters (which could forge
+// a second log line or inject a terminal escape sequence) are collapsed to spaces, runs of
+// whitespace collapse, and the result is length-capped. This is hygiene, NOT redaction -
+// see logLookupFailure for where a secret can actually be removed.
+function oneSafeLine(text: string): string {
+  const flat = text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  return flat.length > MAX_LOG_LINE_CHARS ? `${flat.slice(0, MAX_LOG_LINE_CHARS)}...` : flat;
+}
+
+// Only an error's name and message, never its stack (which can quote the message again)
+// and never its enumerable properties (a transport error can carry the whole requestInit,
+// headers included). `String(value)` on a non-Error renders "[object Object]" rather than
+// walking it, for the same reason.
+function errorText(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  // A specific name (TypeError, AbortError) is diagnostic and is kept; the generic "Error"
+  // is not, and the client already renders a cause chain into the message, so keeping it
+  // would print "Error: Error: ..." for every ordinary failure.
+  return err.name === "Error" ? err.message : `${err.name}: ${err.message}`;
+}
+
+// Writes ONE line to stderr for a lookup that could not run. Without it, an outage, a
+// credential pointing at the wrong account and a backend schema change are indistinguishable
+// to whoever is holding the pager: all three produce a sweep of `unchecked` verdicts and a
+// silent log, and every diagnostic src/pageindex-client.ts builds is unobservable.
+//
+// stderr, never stdout - stdout carries the MCP protocol stream (test/stdout-safety.test.ts).
+//
+// On secrets: this prints a thrown message, and the resolver cannot redact a key it does
+// not hold. The guarantee comes from the layer that DOES hold it - PageindexHttpClient
+// scrubs the key out of every error it throws, at the one place the key is in scope (see
+// `connect`), so nothing crossing the DocLookup boundary carries it. That is a contract on
+// DocLookup, stated on the interface. What this function adds is the hygiene above:
+// bounded, single-line, control-character-free, for text that came from a draft an agent
+// wrote and a response a backend sent.
+function logLookupFailure(what: string, docName: string, err: unknown): void {
+  console.error(
+    oneSafeLine(`citation-verify-mcp: ${what} for "${docName}" could not be checked: ${errorText(err)}`),
+  );
+}
 
 const PAGE_COUNT_UNKNOWN_SUGGESTION =
   "The document's page count is not available, so the cited page could not be verified.";
@@ -120,7 +193,9 @@ async function classify(
   // this returns immediately.
   const docOutcome = await getDocOutcome(docName, client, docOutcomes);
   if (docOutcome.kind === "unchecked") {
-    return { token, status: "unchecked", title: null, suggestion: null };
+    // `title` stays null: nothing was confirmed about this document, not even that it
+    // exists. The explanation is static - see DOC_UNCHECKED_SUGGESTION.
+    return { token, status: "unchecked", title: null, suggestion: DOC_UNCHECKED_SUGGESTION };
   }
   if (docOutcome.kind === "not-found") {
     return { token, status: "unresolved", title: null, suggestion: docOutcome.suggestion };
@@ -181,14 +256,21 @@ async function classify(
   // data and stays true regardless of what the other half would have said. Falling back to
   // `unchecked` there would let a degraded outline service launder a fabricated page number
   // into "keep this" - adjudicated, see the R3 review.
+  //
+  // `title` is the document's REAL name here, because the document really was found: this
+  // is the citation a consuming agent must FIX (wrong page, wrong node) rather than delete,
+  // and reporting `title: null` on it made it byte-identical to a citation naming a
+  // document that does not exist - the opposite action.
   if (pageFailed || nodeFailed) {
-    return { token, status: "unresolved", title: null, suggestion };
+    return { token, status: "unresolved", title: doc.name, suggestion };
   }
 
   // Neither half positively failed, but the node check could not run - `unchecked`, per the
   // same reasoning as step 2: an incomplete check must never present as a clean pass.
+  // `title` is set for the same reason as above: the DOCUMENT was positively confirmed,
+  // only its outline could not be read.
   if (nodeUnchecked) {
-    return { token, status: "unchecked", title: null, suggestion };
+    return { token, status: "unchecked", title: doc.name, suggestion };
   }
 
   // Step 5: resolved. `suggestion` here (if set) is only the "page count unknown, not
@@ -218,9 +300,12 @@ async function getDocOutcome(
             ? `Did you mean "${result.similar[0]}"?`
             : NO_NEAR_MATCH_SUGGESTION,
         };
-  } catch {
+  } catch (err) {
     // The client's contract: a throw means the check could not run. Never reinterpreted as
-    // a positive miss.
+    // a positive miss. The error is not discarded: it is the only signal an operator gets
+    // for the most common production failure, so it goes to stderr - once per distinct
+    // document name, since this whole function is memoized per call.
+    logLookupFailure("document", docName, err);
     outcome = { kind: "unchecked" };
   }
   cache.set(docName, outcome);
@@ -237,8 +322,11 @@ async function getNodeIdSet(
   let ids: Set<string> | null;
   try {
     ids = await client.getNodeIds(docName);
-  } catch {
-    ids = null; // records a throw without ever treating it as "node absent"
+  } catch (err) {
+    // Recorded as a throw, never as "node absent" - and reported to the operator, for the
+    // same reason as the document path above. Once per distinct document name.
+    logLookupFailure("document structure", docName, err);
+    ids = null;
   }
   cache.set(docName, ids);
   return ids;

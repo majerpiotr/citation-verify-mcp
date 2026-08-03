@@ -1,12 +1,16 @@
 // test/pageindex-client.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { redactSecret } from "../src/api-key.js";
+import { SERVER_VERSION } from "../src/version.js";
 import {
   interpretGetDocument,
   collectNodeIds,
   shouldFetchNextStructurePart,
   accumulateNodeIds,
   assertSecureBaseUrl,
+  sanitizeLookupError,
   PageindexHttpClient,
 } from "../src/pageindex-client.js";
 
@@ -390,10 +394,41 @@ describe("accumulateNodeIds", () => {
     expect(calls).toBeGreaterThan(1);
   });
 
-  // parseStructurePage must not read a `structure` key out of an errored response.
-  it("throws when a part reports isError, even if the body has a structure key", async () => {
+  // parseStructurePage must not read a `structure` key out of an errored response. The
+  // structure below is deliberately NON-EMPTY: with `structure: []` this case is caught by
+  // the empty-first-part guard above even when the isError guard is deleted, so it passes
+  // either way and pins nothing. A populated one is the case that matters in production -
+  // an error body that happens to carry a structure would contribute a PARTIAL node set, a
+  // real node would look absent, and the citation would come back `unresolved` instead of
+  // `unchecked` (CLAUDE.md hard rule 4).
+  it("throws when a part reports isError, even if the body carries a populated structure", async () => {
     const fetchPart = async () =>
-      structureResult({ error: "PageIndex API returned 503", structure: [] }, true);
+      structureResult(
+        {
+          error: "PageIndex API returned 503",
+          structure: [{ title: "Partial", node_id: "0000" }],
+        },
+        true,
+      );
+    await expect(accumulateNodeIds("some-doc.pdf", fetchPart)).rejects.toThrow();
+  });
+
+  // Same guard, from the direction that produces the false `unresolved`: a LATER part
+  // erroring must not leave the ids collected so far standing in for the whole tree.
+  it("throws when a later part reports isError, never returning the ids collected so far", async () => {
+    const fetchPart = async (part: number) => {
+      if (part === 1) {
+        return structureResult({
+          success: true,
+          structure: [{ title: "A", node_id: "0000" }],
+          pagination: { has_more: true },
+        });
+      }
+      return structureResult(
+        { error: "PageIndex API returned 503", structure: [{ title: "B", node_id: "0001" }] },
+        true,
+      );
+    };
     await expect(accumulateNodeIds("some-doc.pdf", fetchPart)).rejects.toThrow();
   });
 });
@@ -528,6 +563,126 @@ describe("PageindexHttpClient.connect key guard", () => {
 // forever (CLAUDE.md hard rule 4) while the rest of this suite stays green. Uses
 // PageindexHttpClient.forTesting to inject a fake ToolCaller that records every
 // {name, arguments} pair - no network, no API key, no real MCP transport.
+// The version string the MCP client identifies itself with was hardcoded in two source
+// files while package.json held a third copy, so the first `npm version patch` would have
+// made this server advertise a version it is not. There is now one source: package.json,
+// read through src/version.ts.
+describe("the advertised version", () => {
+  function readPackageJson(): Record<string, unknown> {
+    const path = fileURLToPath(new URL("../package.json", import.meta.url));
+    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  }
+
+  it("equals the version in package.json", () => {
+    expect(SERVER_VERSION).toBe(readPackageJson()["version"]);
+    // Not the "package.json could not be read" fallback.
+    expect(SERVER_VERSION).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  // Behaviour alone cannot catch a re-introduced copy: a hardcoded "0.0.1" agrees with
+  // package.json today and only diverges after a release. Scanning the source does.
+  it("is not hardcoded anywhere in the client source", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("../src/pageindex-client.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(source).toMatch(/SERVER_VERSION/);
+    expect(source).not.toMatch(/version:\s*["'`]\d/);
+  });
+});
+
+// Errors thrown by a DocLookup are printed to stderr by the resolver, and an MCP host
+// captures a stdio server's stderr into its log files. The resolver holds no API key and so
+// cannot redact one; this is the only layer where the key is in scope, so the guarantee
+// that nothing crossing the DocLookup boundary carries it has to be made here.
+describe("sanitizeLookupError", () => {
+  // Fabricated, never derived from any real key. Everything asserted below is a plain
+  // string or a boolean, so a failing assertion prints no live credential.
+  const FAKE_KEY = "pi-FAKE-KEY-abc123";
+
+  it("scrubs the secret out of a message that quotes it verbatim", () => {
+    const err = new Error(`invalid header value: Authorization: Bearer ${FAKE_KEY}`);
+    const out = sanitizeLookupError(err, FAKE_KEY);
+    expect(out.includes(FAKE_KEY)).toBe(false);
+    expect(out).toMatch(/invalid header value/);
+  });
+
+  it("scrubs the secret out of a nested cause, not only the top-level message", () => {
+    const inner = new Error(`connect failed with Bearer ${FAKE_KEY}`);
+    const outer = new Error("fetch failed", { cause: inner });
+    const out = sanitizeLookupError(outer, FAKE_KEY);
+    expect(out.includes(FAKE_KEY)).toBe(false);
+    expect(out).toMatch(/fetch failed/);
+    expect(out).toMatch(/connect failed/);
+  });
+
+  it("bounds the rendered length", () => {
+    const out = sanitizeLookupError(new Error("y".repeat(9000)), FAKE_KEY);
+    expect(out.length).toBeLessThan(500);
+  });
+
+  it("renders a non-Error value without walking its properties", () => {
+    const out = sanitizeLookupError({ apiKey: FAKE_KEY }, FAKE_KEY);
+    expect(out.includes(FAKE_KEY)).toBe(false);
+  });
+});
+
+describe("PageindexHttpClient error sanitation", () => {
+  const FAKE_KEY = "pi-FAKE-KEY-abc123";
+
+  // Reports the outcome as data that is safe to print: never the raw error.
+  async function messageOf(run: () => Promise<unknown>): Promise<string> {
+    try {
+      await run();
+      return "<resolved without throwing>";
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  it("bounds and re-renders an error thrown by the transport, for getDocument", async () => {
+    const client = PageindexHttpClient.forTesting({
+      async callTool() {
+        throw new Error(`socket hang up ${"z".repeat(9000)}`);
+      },
+    });
+    const message = await messageOf(() => client.getDocument("report.pdf"));
+    expect(message).toMatch(/socket hang up/);
+    expect(message.length).toBeLessThan(500);
+  });
+
+  it("bounds and re-renders an error thrown by the transport, for getNodeIds", async () => {
+    const client = PageindexHttpClient.forTesting({
+      async callTool() {
+        throw new Error(`socket hang up ${"z".repeat(9000)}`);
+      },
+    });
+    const message = await messageOf(() => client.getNodeIds("report.pdf"));
+    expect(message).toMatch(/socket hang up/);
+    expect(message.length).toBeLessThan(500);
+  });
+
+  // Sanitizing must not swallow anything: a failure still reaches the resolver as a THROW,
+  // which is what makes it `unchecked` rather than `unresolved`.
+  it("still throws rather than returning a verdict when the call fails", async () => {
+    const client = PageindexHttpClient.forTesting({
+      async callTool() {
+        throw new Error("backend down");
+      },
+    });
+    await expect(client.getDocument("report.pdf")).rejects.toThrow(/backend down/);
+  });
+
+  // A leaked key would matter here, so the assertion is on a boolean and a redacted copy -
+  // never on a value that could print the key itself.
+  it("scrubs the connection's own key out of an error the transport throws", () => {
+    const err = new Error(`request failed, headers: {"authorization":"Bearer ${FAKE_KEY}"}`);
+    const out = sanitizeLookupError(err, FAKE_KEY);
+    expect(out.includes(FAKE_KEY)).toBe(false);
+    expect(redactSecret(out, FAKE_KEY)).toBe(out);
+  });
+});
+
 describe("PageindexHttpClient wire contract", () => {
   it("calls get_document with tool name get_document and argument key doc_name", async () => {
     const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
