@@ -18,22 +18,31 @@ jobs:
       matrix:
         # EXACT versions, never a bare major. `node-version: "20"` resolves to whatever
         # 20.x is newest on the day the job runs, so it exercises no declared floor at
-        # all - which is how a real floor break went unnoticed: `npm test` fails on Node
-        # 20.12.2 (vitest 4 bundles with rolldown, which calls `util.styleText` with an
-        # array of formats; array support arrived in 20.13.0), while CI stayed green on
-        # the newest 20.x throughout.
+        # all - which is how a real floor break went unnoticed: `npm test` fails outright
+        # on older 20.x releases while CI stayed green on the newest 20.x throughout.
         #
-        # 20.13.0 is the measured DEVELOPMENT floor and the load-bearing entry: it is the
-        # oldest release on which `npm ci`, `npm run build`, `npm run typecheck` and
-        # `npm test` all pass, and the README's Development section publishes the same
-        # number (test/toolchain.test.ts pins the two together). It is NOT the runtime
-        # floor - `package.json` `engines` stays `>=20`, and the built server was measured
-        # completing a full MCP session on Node 20.0.0. That lower floor cannot be covered
-        # here, because the suite that would prove it is the thing that will not run.
+        # 20.19.0 is the DEVELOPMENT floor and the load-bearing entry, and it is set by
+        # rolldown's own declared range (`^20.19.0 || >=22.12.0`), not by picking the
+        # oldest version that happened to work. Below it npm skips rolldown's native
+        # binding as engine-incompatible and the wasm fallback declares the same floor, so
+        # `npm test` dies with "Cannot find native binding" before a single test runs.
+        #
+        # That failure is PLATFORM-DEPENDENT, which is why measuring it on one machine was
+        # not enough: on macOS arm64 a clean `npm ci` on 20.13.0 installs a working binding
+        # and the whole suite passes, while the same commit on ubuntu-latest fails outright.
+        # Trust the declared range over a local green run.
+        #
+        # This is NOT the runtime floor - `package.json` `engines` stays `>=20`, and the
+        # built server was measured completing a full MCP session on Node 20.0.0. That
+        # lower floor cannot be covered here, because the suite that would prove it is the
+        # thing that will not run.
+        #
+        # The README's Development section publishes the same number
+        # (test/toolchain.test.ts pins the two together).
         #
         # 22.22.2 and 24.17.0 are the current heads of the other supported lines. Bump
-        # them deliberately, and re-measure the floor entry before raising IT.
-        node-version: ["20.13.0", "22.22.2", "24.17.0"]
+        # them deliberately, and re-check rolldown's engines range before raising the floor.
+        node-version: ["20.19.0", "22.22.2", "24.17.0"]
     steps:
       - uses: actions/checkout@v4
 

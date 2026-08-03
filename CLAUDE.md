@@ -129,9 +129,12 @@ Keep commits scoped to one defect or one feature, with an explicit path list.
 ## Environment
 
 - The runtime floor is Node 20 (`engines`), verified by running the built server there.
-- The DEVELOPMENT floor is higher: Node 20.13.0. Below it `npm test` cannot run, because
-  vitest's bundler calls a `node:util` API that older 20.x releases reject. This is a
-  tooling limit, not a runtime one.
+- The DEVELOPMENT floor is higher: Node 20.19.0, set by rolldown's declared range
+  (`^20.19.0 || >=22.12.0`). Below it npm skips rolldown's native binding as
+  engine-incompatible and `npm test` fails with `Cannot find native binding`. This is a
+  tooling limit, not a runtime one, and it is platform-dependent: an older 20.x can pass
+  on macOS arm64 and still fail on Linux, so trust the declared range over a local green
+  run.
 - `test/integration.test.ts` is credential-gated and skips cleanly without env. It needs
   BOTH `PAGEINDEX_API_KEY` and `CITATION_VERIFY_TEST_DOC_NAME` (plus
   `CITATION_VERIFY_TEST_NODE_ID` for the node assertion); with only the key it reports a

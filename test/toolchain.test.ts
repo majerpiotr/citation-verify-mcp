@@ -6,11 +6,16 @@
 //     server. Measured: the built server completes a full MCP session correctly on Node
 //     20.0.0.
 //   - the DEVELOPMENT floor, what a contributor needs to run `npm test`. It is higher:
-//     vitest 4 bundles with rolldown, which calls `util.styleText` with an ARRAY of
-//     formats, and array support does not exist before Node 20.13.0. Measured: `npm ci`,
-//     `npm run build` and `npm run typecheck` all pass on 20.12.2, while `npm test` dies
-//     with `ERR_INVALID_ARG_VALUE` inside node_modules, naming nothing about Node
-//     versions; 20.13.0 passes the whole suite.
+//     vitest 4 bundles with rolldown, whose declared range is `^20.19.0 || >=22.12.0`.
+//     Below that npm skips rolldown's native binding as engine-incompatible and the wasm
+//     fallback declares the same floor, so `npm test` fails with `Cannot find native
+//     binding` before any test runs, while `npm ci`, `npm run build` and `npm run
+//     typecheck` still succeed.
+//
+//     This one is platform-dependent, which is why a single machine's green run does not
+//     establish it: a clean `npm ci` on 20.13.0 installs a working binding on macOS arm64
+//     and passes the whole suite, while the same commit fails on ubuntu-latest. The
+//     declared range is the floor, not whatever one machine tolerates.
 //
 // CI used to say `node-version: ["20"]`, which setup-node resolves to the NEWEST 20.x, so
 // the matrix never exercised any declared floor and could not have caught this. These
@@ -37,8 +42,8 @@ function ciMatrixVersions(): string[] {
     .filter((entry) => entry.length > 0);
 }
 
-// Numeric, not lexicographic: "20.13.0" must sort below "20.9.0"'s successor lines and
-// above "20.12.2", which a string comparison gets wrong.
+// Numeric, not lexicographic: "20.19.0" must sort above "20.9.0" and above "20.12.2",
+// which a string comparison gets wrong.
 function compareVersions(a: string, b: string): number {
   const pa = a.split(".").map(Number);
   const pb = b.split(".").map(Number);
