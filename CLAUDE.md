@@ -16,6 +16,9 @@ Authoritative documents, read before starting work, in this order:
 - `docs/design.md` - the approved design, since revised against those findings.
 - `docs/rework-plan.md` - the rework the findings forced. Supersedes
   `docs/implementation-plan.md` (the original task-by-task plan) where they conflict.
+- `docs/citation-grammar.md` - the published, exhaustive grammar reference. It is a
+  USER-FACING surface, not background: several disclosed limits live only there, and
+  `test/server.test.ts` pins them against it. Read it before changing `src/grammar.ts`.
 
 ## Hard rules
 
@@ -33,10 +36,16 @@ Authoritative documents, read before starting work, in this order:
    confidence scores, self-correction loops. They are deliberately deferred
    (`docs/design.md` section 12). If a task seems to need one, stop and ask.
 4. **Invariant: `unresolved` vs `unchecked`.** `unresolved` means checked against the
-   corpus and not found. `unchecked` means the check could not run (missing key, timeout,
-   backend down). A backend failure must NEVER be reported as `unresolved` - otherwise a
+   corpus and not found. `unchecked` means the check could not run (timeout, backend down,
+   credential rejected, unreadable response, or a citation unverifiable by construction -
+   NOT a missing key, which makes `src/index.ts` refuse to start, so no tool call happens).
+   A backend failure must NEVER be reported as `unresolved` - otherwise a
    consuming agent deletes good citations during an outage. There is a test for this;
    never weaken it.
+   Companion invariant on the same field set: **`title` is non-null if and only if the
+   backend positively confirmed the cited document exists**, on any status. It is the
+   machine-readable delete-versus-fix signal, so an `unresolved` on a real document cited
+   with a bad page or node must keep carrying its real name.
 5. **Git hygiene.** Always `git add <explicit paths>`, never `git add .` or `git add -A`.
    Before every commit, confirm no secret is staged. There is no remote; never add one or
    push without being asked.
@@ -94,20 +103,31 @@ for the full ledger and every operator ruling):
   so; do not quietly soften that.
 - Grammar over-reach still produces a false `unresolved` on some non-citations, and
   under-reach still misses some real ones. A citation glued to a preceding URL by `,`, `;`,
-  `(` or `)` is silently dropped in every status (a ruled-on trade-off: a false
-  `unresolved` on a valid external link is worse than a silence). Each case is disclosed in
-  the tool description and the README. **If you change the grammar, update both.**
+  `(` or `)` is silently dropped in every status, and so is any name touching `/ : % + @ #
+  = & \` or a format control character, or written directly against a script that uses no
+  word spaces (the same ruled-on trade-off: a false `unresolved` on a valid citation is
+  worse than a silence, and silence is recoverable by quoting). Each case is disclosed in
+  THREE user-facing surfaces: the tool description in `src/server.ts`, `README.md`, and
+  `docs/citation-grammar.md`. **If you change the grammar, update all three** - several
+  limits now live only in the grammar reference, so updating the first two leaves the suite
+  red on the third.
   `test/server.test.ts` pins the tool description clause by clause, and its
-  "README states the load-bearing claims the tool description states" block pins the
-  README's half of the same claims - substance only, whitespace-normalized, so re-wrapping
-  a paragraph is fine and deleting a claim is not. Neither block is exhaustive: a claim you
-  add is only guarded once you add the assertion with it.
+  "the prose documentation states the load-bearing claims the tool description states"
+  block pins the same claims in whichever prose file now carries them - substance only,
+  whitespace-normalized, so re-wrapping a paragraph is fine and deleting a claim is not.
+  Neither block is exhaustive: a claim you add is only guarded once you add the assertion
+  with it. Never delete an assertion to make a move compile - move it to the file the
+  content moved to.
 - No per-call timeout budget across a whole draft; the SDK's 60s per-request default is
   the only bound, and `verifyCitations` is sequential, so the bound multiplies by the
   number of distinct documents (disclosed in the README's known limits).
   `PAGEINDEX_FOLDER_ID` is not implemented.
-- `package.json` declares `"license": "MIT"` but there is no `LICENSE` file in the repo,
-  and `"files": ["dist"]` would not ship one. Unresolved; the owner's call.
+- The package is NOT published to npm and the repo has NO git remote. The README's
+  quick start therefore leads with a clone-and-build path and marks the `npx` form as
+  post-publication. Do not present the `npx` form as working today.
+- A failed lookup writes one redacted, control-character-free, 400-char-capped line to
+  stderr (`logLookupFailure` in `src/resolver.ts`). stdout is the MCP protocol stream and
+  must never be written to (`test/stdout-safety.test.ts`).
 
 ## Commands
 

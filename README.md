@@ -26,7 +26,31 @@ whether that something says what the agent claims it says is out of scope.
 
 ## Quick start
 
-Add this to your MCP host's server configuration:
+**This package is not published to npm yet**, so today the only installation path that works
+is from source. Clone it, build it, and point your MCP host at the built entry point:
+
+```bash
+git clone <this repository> citation-verify-mcp
+cd citation-verify-mcp
+npm install
+npm run build
+```
+
+```json
+{
+  "mcpServers": {
+    "citation-verify": {
+      "command": "node",
+      "args": ["/absolute/path/to/citation-verify-mcp/dist/index.js"],
+      "env": {
+        "PAGEINDEX_API_KEY": "<your-pageindex-api-key>"
+      }
+    }
+  }
+}
+```
+
+Once the package **is** published, the same integration needs no clone and no build step:
 
 ```json
 {
@@ -42,8 +66,27 @@ Add this to your MCP host's server configuration:
 }
 ```
 
-That is the whole integration. **Unplugging is removing the block.** There is no other
-integration point, no database, and no state kept between calls.
+Either way, that is the whole integration. **Unplugging is removing the block.** There is no
+other integration point, no database, and no state kept between calls.
+
+## What leaves your machine
+
+**The draft text never leaves this process.** Extraction is entirely local: the grammar runs
+here, in this server, and the only thing sent to PageIndex is a document *name* the grammar
+extracted, plus a part number when an outline has to be paged through. Those are the complete
+request payloads:
+
+```json
+{ "doc_name": "report.pdf" }
+{ "doc_name": "report.pdf", "part": 2 }
+```
+
+Your prose, the claims around a citation, the surrounding sentences, and even the cited page
+and node numbers are never transmitted - pages are bounds-checked and nodes are matched
+locally, against the metadata that comes back. What crosses the network is the set of file
+names your agent cited, over HTTPS, to `https://api.pageindex.ai/mcp` (or to whatever
+`PAGEINDEX_BASE_URL` points at), with the API key as a bearer token. Nothing is written to
+disk, and nothing is kept between calls.
 
 ## Example
 
@@ -79,17 +122,24 @@ returns this JSON, in a text content block:
     {
       "token": "report.pdf#p99",
       "status": "unresolved",
-      "title": null,
+      "title": "report.pdf",
       "suggestion": "This document has 11 pages; the cited page is outside that range."
     }
   ]
 }
 ```
 
-Two citations came back `unresolved` for structurally different reasons, and only
-`suggestion` says which is which. The second names a document nothing in the corpus matches,
-and the backend offered no near name either: find the real file name or drop the claim. The
-third names a real document with a fabricated page number: fix the page and keep the claim.
+Two citations came back `unresolved` for structurally different reasons, and **`title` is
+what says which is which.** The second has `title: null`: nothing in the corpus carries that
+name, and the backend offered no near name either - find the real file name or drop the claim.
+The third has `title: "report.pdf"`: the document is real and only the page number was
+fabricated - fix the page and keep the claim. `suggestion` explains both in English, but
+`title` is the same distinction in a field you can branch on.
+
+(The exact `suggestion` on the second entry is whatever the backend does or does not offer as
+a near name for that string. Here it offered none. A live corpus containing `report.pdf` may
+well answer `Did you mean "report.pdf"?` instead - the verdict is the same either way, and the
+warning below about near-name suggestions applies.)
 
 ## Reading the result
 
@@ -105,16 +155,25 @@ agent to report its own citations honestly.
 | `unchecked` | An **array** of tokens. |
 | `details` | One entry per distinct citation: `{ token, status, title, suggestion }`. |
 
-Each `details` entry carries `status` (`resolved` | `unresolved` | `unchecked`), `title`
-(the resolved document's name, or `null`) and `suggestion` (a string worth acting on, or
-`null`).
+Each `details` entry carries `status` (`resolved` | `unresolved` | `unchecked`), `title` and
+`suggestion` (a string worth acting on, or `null`).
+
+**`title` is the machine-readable answer to "does the cited document exist?"** It carries the
+document's real file name **if and only if** the backend positively confirmed that document -
+on *any* status, including an `unresolved` caused by a bad page or node, and an `unchecked`
+caused by an outline that could not be read. `title: null` means the document was never
+confirmed to exist. It is the field to branch on when deciding whether to fix a citation or
+delete it.
 
 ### `unresolved` vs `unchecked` - the distinction everything rests on
 
 - **`unresolved` means checked and not found.** The miss was positively established against
   the corpus.
-- **`unchecked` means the check could not run** - a missing key, a timeout, the backend
-  being unreachable, or a citation that is unverifiable by construction.
+- **`unchecked` means the check could not run** - a timeout, the backend being unreachable,
+  a credential the backend rejected, a response that could not be read, or a citation that is
+  unverifiable by construction. A *missing* key is not one of these: the server refuses to
+  start at all in that case (see [Startup validation](#startup-validation)), so there is no
+  tool call to return `unchecked` from.
 
 A consuming agent **deletes** what comes back `unresolved`. So a backend outage reported as
 `unresolved` would make it delete good work. This server never does that: any failure,
@@ -127,21 +186,32 @@ Two further points that are easy to get wrong:
 - **`unresolved` does not always mean the document is missing.** The miss can be the
   document, the page, or the node. A document that really is in the corpus, cited with a
   page outside its real page count or a node absent from its outline, is reported
-  `unresolved` with `title: null` exactly like a document that does not exist at all. Only
-  `suggestion` distinguishes the two, so read it before deleting anything.
+  `unresolved` too - but it carries its real file name in `title`, while a document that does
+  not exist at all is `unresolved` with `title: null`. **`title` is what distinguishes the
+  two**; `suggestion` says the same thing in prose. Read `title` before deleting anything: a
+  non-null one means fix the citation, not remove the claim.
 - `total: 0` means no citation of a recognized shape was found in the draft - it is not a
   clean bill of health, and not proof the text has no citations. See
   [Does this work on real agent output?](#does-this-work-on-real-agent-output) below.
 
 ### About `suggestion`
 
-`suggestion` explains a verdict; it never changes one. It may carry the backend's own
+`suggestion` explains a verdict; it never changes one. Every `unresolved` and every
+`unchecked` carries one. It may carry the backend's own
 near-name match (`Did you mean "report.pdf"?`), the real page count when a cited page falls
 outside it, which half of a combined page-plus-node citation failed, or why a citation could
 not be checked at all. When a document is simply not found and the backend offers no near
 name, it carries a fixed reminder that names are matched case-sensitively and that a name
 differing only in capitalisation misses silently - it never guesses a document.
-It is also set on some **`resolved`** verdicts: when PageIndex reports
+
+When a lookup fails outright, `suggestion` is a **fixed** explanation: the check could not
+run, that is not evidence the document is missing, and the citation must not be deleted. It
+deliberately quotes no part of the underlying error - a transport error is untrusted text that
+can echo a request header, and this field goes straight into a model's context. The specific
+error goes to this server's stderr instead (see
+[Diagnosing a failed lookup](#diagnosing-a-failed-lookup)).
+
+`suggestion` is also set on some **`resolved`** verdicts: when PageIndex reports
 no page count for a document, the cited page is not bounds-checked and the citation still
 resolves, with `suggestion` saying the page itself was never verified.
 
@@ -187,24 +257,31 @@ Cite in one of these forms:
 
 A quoted name is only honoured when it is at most 4 words and 80 characters, starts with
 a letter or digit, and contains nothing but letters, digits, spaces, dots, underscores and
-hyphens. A name outside that shape is silently read as a shorter fragment of itself and
-checked as a different document, so prefer the shortest real file name available.
+hyphens. A name outside that shape is either dropped entirely (checked as nothing, counted
+in nothing) or silently read as a shorter fragment of itself and checked as a different
+document, so prefer the shortest real file name available.
 
-After the call: for every unresolved citation, read suggestion before acting. If it says
-the document exists and only the cited page or node missed, fix that and keep the claim -
-the source is real. Otherwise remove the claim or replace it with one that resolves. For
-every unchecked citation, keep it as written - the corpus was never consulted, so it may
-well be valid; do not delete it. Read suggestion even on a resolved citation - a cited
-page is sometimes not verifiable, and the citation still resolves without it. A citation
-written in any other form is not checked at all: total: 0 means nothing checkable was
-found, not that the draft is clean.
+Write the file name so that nothing is glued to it. A name touching / : % + @ # = & or \
+(for example sub/chapter.pdf) is not checked at all and is reported nowhere, and neither is
+a name written directly against text in a script that uses no word spaces. Always put a
+space after node_id: - node_id:report.pdf with no space is not checked.
+
+After the call: for every unresolved citation, read title first. If title is not null, the
+document is real and only the cited page or node missed - fix that and keep the claim;
+suggestion says which half missed. If title is null, nothing in the corpus carries that
+name: remove the claim or replace it with one that resolves. For every unchecked citation,
+keep it as written - the corpus was never consulted, so it may well be valid; do not delete
+it. Read suggestion even on a resolved citation - a cited page is sometimes not verifiable,
+and the citation still resolves without it. A citation written in any other form is not
+checked at all: total: 0 means nothing checkable was found, not that the draft is clean.
 ```
 
 Acting on the result, generically:
 
-- For every `unresolved` citation: **read `suggestion` first.** If the document exists and
-  only the cited page or node missed, correct that - the source is real and the claim should
-  stay. Otherwise remove the claim, or search again and replace it with a citation that
+- For every `unresolved` citation: **read `title` first.** Non-null means the document exists
+  and only the cited page or node missed - correct that, the source is real and the claim
+  should stay (`suggestion` says which half missed). `null` means nothing in the corpus
+  carries that name: remove the claim, or search again and replace it with a citation that
   actually resolves.
 - For every `unchecked` citation: **leave it in place**, optionally with a note. Do not
   delete it. The corpus was never consulted for it, so it may well be valid. Deleting
@@ -216,9 +293,13 @@ Acting on the result, generically:
 **Read this before adopting.** It is the single biggest risk to this tool being useful to
 you, and it is not hypothetical.
 
-One real multi-agent application using PageIndex was investigated (read-only, ~25 citing
-agent roles). Every one of its citing roles was uniformly instructed to use a single
-citation format. In the one real saved transcript available, **that format appeared zero
+One real multi-agent application using PageIndex was investigated (read-only, ~25 agent
+roles). Its corpus-citing roles were uniformly instructed to use a single citation format.
+(One role of the ~25, which researches external web sources rather than the corpus, was
+instructed to use a different bracket-tag convention of its own - evidence that one
+application can carry more than one citation convention at a time, invented independently by
+whoever wrote each agent's instructions.) In the one real saved transcript available, **the
+instructed format appeared zero
 times.** What the agents actually wrote instead was free-text prose naming a source by its
 human-readable display title, with no file name, no id and no page - naming nothing any
 grammar could look up. The full write-up is in
@@ -269,6 +350,25 @@ A non-https, non-loopback `PAGEINDEX_BASE_URL` is refused the same way. An inval
 plausible-looking key fails when the server connects to PageIndex, which is reported to the
 host as a startup error rather than a working-but-broken tool.
 
+### Diagnosing a failed lookup
+
+When a lookup fails, the citation comes back `unchecked` with a fixed explanation, and the
+underlying error is written as **one line to this server's stderr**:
+
+```text
+citation-verify-mcp: document for "report.pdf" could not be checked: TypeError: fetch failed
+```
+
+An MCP host captures a stdio server's stderr into its own log files, so that is where the
+diagnosis lands - never in the tool result a model reads. One line per distinct document name
+per call, for the existence lookup (`document`) and for the outline lookup (`document
+structure`) alike. The line is redacted (the API key is scrubbed at the one layer that holds
+it), stripped of control characters, and capped at 400 characters, so a large error body
+cannot flood a host's log. Nothing goes to stdout: stdout carries the MCP protocol stream.
+
+Without that line, an outage, a key pointing at the wrong account and a backend change are
+indistinguishable - all three produce a sweep of `unchecked` verdicts.
+
 ### Account alignment
 
 The server's API key must point at the same PageIndex account the citing agent draws its
@@ -313,7 +413,9 @@ The grammar is fixed, not learned, and deliberately narrow. In summary:
   `unresolved`.** Node numbering is per-document, so a node id alone identifies nothing.
 - **A bracket tag** (`[node: some-doc-id-123]`, `[chunk: abc-42]`) is `unchecked` unless its
   value names a `.pdf` document as a standalone token - then that document is checked exactly
-  as it would be in prose.
+  as it would be in prose. Written with **no space** after the colon, `[node:report.pdf]` and
+  `node_id:report.pdf` stay `unchecked` instead: the colon glues the name into the id. Write
+  the space.
 - **A name containing spaces must be quoted** in double quotes or backticks *and* be
   file-name-shaped: at most 4 words, at most 80 characters, **beginning with a letter or
   digit**, and otherwise only letters, digits, spaces, dots, underscores and hyphens.
@@ -321,9 +423,16 @@ The grammar is fixed, not learned, and deliberately narrow. In summary:
   silently read as a shorter fragment of itself and checked as a different document.
 - **A bare name written in a script that does not separate words with spaces** (Han,
   Hiragana, Katakana, Thai, Lao, Khmer, Myanmar, Tibetan) is not extracted at all; quote it
-  to have it checked.
+  to have it checked. A Latin-script name written directly against such text, with no space
+  between them, is not extracted either.
+- **A name must stand as its own token.** A name touching `/`, `:`, `%`, `+`, `@`, `#`, `=`,
+  `&`, `\` or a format control character is not extracted in any status: `sub/chapter.pdf`,
+  `ns:chapter.pdf` and `report+final.pdf` are all silent.
 - **A `.pdf` that is a URL's own path segment** (`https://example.com/whitepaper.pdf`) is
-  skipped entirely - not `resolved`, not `unresolved`, not `unchecked`.
+  skipped entirely - not `resolved`, not `unresolved`, not `unchecked`. A scheme-relative
+  (`//example.com/doc.pdf`) or bare-host (`example.com/doc.pdf`) URL is dropped too, by the
+  standalone-token rule above rather than by the URL rule - so an external link written
+  either way is silent, not falsely `unresolved`.
 
 Anything outside those shapes is not checked, and the omission is silent rather than
 reported: that is what `total: 0` on a draft full of citations means.
@@ -368,10 +477,19 @@ Known and carried deliberately.
 - **Under-reach:** a real citation can be missed with no trace at all. A citation glued to a
   preceding URL by `,`, `;`, `(` or `)` is read as part of that URL and is **dropped in every
   status** - it appears in no array and is not counted in `total`, which is indistinguishable
-  from there being nothing to check. A bare document name in a script that does not separate
-  words with spaces is likewise not extracted at all; quote it to have it checked. A
-  space-bearing name that fails the quoted shape check is dropped entirely or read as a
-  shorter fragment and checked as a different document.
+  from there being nothing to check. The same silence covers any name that does not stand as
+  its own token: one touching `/`, `:`, `%`, `+`, `@`, `#`, `=`, `&`, `\` or a format control
+  character (`sub/chapter.pdf`, `ns:chapter.pdf`, `report+final.pdf`), and one written
+  directly against text in a script that uses no word spaces. That silence is deliberate: the
+  alternative is to cut the name at the glue character and check the surviving fragment, which
+  reports a document the author never wrote and turns a silence into a false `unresolved`. A
+  bare document name in a script that does not separate words with spaces is likewise not
+  extracted at all; quote it to have it checked. A space-bearing name that fails the quoted
+  shape check is dropped entirely or read as a shorter fragment and checked as a different
+  document.
+- **`unchecked` where a check was possible:** `[node:report.pdf]` and `node_id:report.pdf`
+  written with no space after the colon report an `unchecked` node id instead of checking the
+  document. Safe (an `unchecked` citation is never deleted) but not what the author meant.
 - Both directions are enumerated case by case, with worked examples, in
   [`docs/citation-grammar.md`](docs/citation-grammar.md#where-the-grammar-over-reaches-and-under-reaches).
 - The connector-word list (`on`, `at`, `see`), the quoted-name shape limits and the bracket-tag

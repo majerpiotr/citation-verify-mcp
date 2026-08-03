@@ -163,10 +163,17 @@ describe("createServer verify_citations tool", () => {
     // document itself is absent, because resolver.ts returns `unresolved` for a document
     // that IS present when only the cited page or node missed. Pinned as one conjunction
     // (the array type, the "not always a missing document" correction, and the pointer to
-    // `suggestion` as the only thing that distinguishes them) so a rewording cannot restore
-    // the old "confirmed absent from the corpus" reading while keeping the other pieces.
+    // `title` as what distinguishes them) so a rewording cannot restore the old "confirmed
+    // absent from the corpus" reading while keeping the other pieces.
+    //
+    // `title` is now the discriminator, not `suggestion`: resolver.ts sets `title` to the
+    // document's real name on EVERY verdict where the backend positively confirmed the
+    // document, so the delete-versus-fix decision is machine-readable instead of only
+    // readable in English prose. The iff wording is pinned inside the same regex as the
+    // "not always missing" correction, because the correction without the field it hangs on
+    // is what the old description already said.
     expect(description).toMatch(
-      /unresolved`?\s*-\s*an ARRAY of tokens whose miss was POSITIVELY established against the corpus, which does NOT always mean the document is missing: a document that IS present, cited with a page outside its real page count or a node absent from its outline, is `?unresolved`? too, with `?title`?\s*:?\s*`?null`? either way - only `?suggestion`? distinguishes the two/i,
+      /unresolved`?\s*-\s*an ARRAY of tokens whose miss was POSITIVELY established against the corpus, which does NOT always mean the document is missing: a document that IS present, cited with a page outside its real page count or a node absent from its outline, is `?unresolved`? too, but carries the document's real `?title`?: `?title`? is non-null IF AND ONLY IF the backend confirmed the cited document exists, whatever the status, so `?title`? - not `?suggestion`? - is what distinguishes the two/i,
     );
     // `unchecked` is an array too - the FULL example parenthetical is pinned positively
     // (not a `.not.toMatch` ban on one wrong wording), so swapping in a false cause like
@@ -190,8 +197,15 @@ describe("createServer verify_citations tool", () => {
     // near-miss name carries an empty `suggestion` - which resolver.ts never produces. The
     // closing "never means an empty `suggestion`" clause is inside the same regex, so it
     // cannot be dropped while the three-form list survives.
+    //
+    // The guarantee now covers `unchecked` too, and that half is load-bearing rather than
+    // decorative: resolver.ts has exactly three `unchecked` return points (bare node id,
+    // failed document lookup, unreadable outline) and each one pushes a non-null
+    // explanation, so a consuming agent that is told to keep an `unchecked` citation can
+    // always be told WHY it was kept. Pinned inside the same conjunction so the `unchecked`
+    // half cannot be dropped while the `unresolved` half survives.
     expect(description).toMatch(
-      /suggestion`? may carry a near-miss document name, an explanation of a miss that WAS checked \(the real page count, or a fixed case-sensitivity reminder when a document is absent and the backend offered no near name\), or an explanation of what could not be checked; every `?unresolved`? carries one, so an absent near-miss name never means an empty `?suggestion`?/i,
+      /suggestion`? may carry a near-miss document name, an explanation of a miss that WAS checked \(the real page count, or a fixed case-sensitivity reminder when a document is absent and the backend offered no near name\), or an explanation of what could not be checked; every `?unresolved`? and every `?unchecked`? carries one, so an absent near-miss name never means an empty `?suggestion`?/i,
     );
 
     // --- Critical 3: a `resolved` verdict can carry an unverified page ---
@@ -208,13 +222,19 @@ describe("createServer verify_citations tool", () => {
 
     // --- the primary `unresolved` action directive (Important 5 named this explicitly -
     // `/do not delete them/i` below guards only the `unchecked` half of the pair) ---
-    // The imperative is pinned TOGETHER with its exception: an `unresolved` whose
-    // `suggestion` says the document exists and only the page or node missed must be
-    // corrected, not deleted. Splitting these into two assertions would let the exception be
-    // dropped while the imperative stayed green - the deletion harm this whole distinction
-    // exists to prevent.
+    // The imperative is pinned TOGETHER with its exception: an `unresolved` whose `title`
+    // is non-null names a document that exists and only the page or node missed, and must
+    // be corrected, not deleted. Splitting these into two assertions would let the exception
+    // be dropped while the imperative stayed green - the deletion harm this whole
+    // distinction exists to prevent.
+    //
+    // The exception is stated against `title` rather than `suggestion` because no
+    // suggestion resolver.ts emits ever literally says "the document exists" - the page-count
+    // and node-absent strings only IMPLY it, so a model applying the old rule literally fell
+    // through to the delete branch on a citation whose source is real. `title` non-null is
+    // the same fact as a machine-readable field.
     expect(description).toMatch(
-      /For each `unresolved` citation, remove the claim or replace it with a verified citation - unless `suggestion` says the document exists and only the page or node missed, in which case fix that instead\./,
+      /For each `unresolved` citation, remove the claim or replace it with a verified citation - unless its `title` is non-null, which means the document exists and only the page or node missed, in which case fix that instead \(`suggestion` says which half missed\)\./,
     );
     // --- outage-safety imperatives - the reason clause ("the corpus was never consulted...")
     // is pinned together with "Do NOT remove", not just the trailing "do not delete them" ---
@@ -303,8 +323,18 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(
       /A character a URL path MAY contain \(`,`, `;`, `\(`, `\)`\) does NOT end it, so a citation glued to a URL by one of those is dropped in EVERY status - absent from the output entirely, which looks identical to there being nothing to check/i,
     );
+    // The name-boundary rule, and the correction it forced. grammar.ts now decides where a
+    // bare name may start and end from a CLOSED allowlist of boundary characters, so any
+    // character outside it - `/ : % + @ # = & \` and every format control - continues the
+    // identifier and the name is never emitted. That inverts the old scheme-relative /
+    // bare-host disclosure: those forms no longer produce a false `unresolved`, they produce
+    // nothing at all, which moves them from the over-reach list to the under-reach list.
+    // Pinned as ONE conjunction - the character set, the "NOT extracted in ANY status"
+    // consequence, the three worked examples, and the URL forms it subsumes - because the
+    // rule without its examples reads as reassurance, and the URL half without the rule
+    // would leave a reader thinking only URLs are affected.
     expect(description).toMatch(
-      /scheme-relative \(`\/\/host\/doc\.pdf`\) and bare-host \(`host\/doc\.pdf`\) forms are NOT covered and are still read as document names, risking a false `unresolved`/i,
+      /A name must also stand as its own token: a name touching `\/`, `:`, `%`, `\+`, `@`, `#`, `=`, `&`, `\\` or a format control character is NOT extracted in ANY status - `sub\/chapter\.pdf`, `ns:chapter\.pdf` and `report\+final\.pdf` are all silent, and so are the scheme-relative \(`\/\/host\/doc\.pdf`\) and bare-host \(`host\/doc\.pdf`\) URL forms, which are therefore dropped rather than falsely `unresolved`/i,
     );
 
     // --- final-fix Fix 4b: a bracket-tag value is no longer unconditionally `unchecked`
@@ -327,6 +357,14 @@ describe("createServer verify_citations tool", () => {
       /otherwise it stays a standalone `unchecked` id, never bound to any document \(id space unconfirmed\)/i,
     );
     expect(description).toMatch(/cite the real `<name>\.pdf` for a verdict/i);
+    // The no-space colon form, a direct consequence of the name-boundary rule above: `:` is
+    // a continuation character, so the name in `[node:report.pdf]` is glued into the id and
+    // both syntaxes report one `unchecked` node instead of checking the document. Safe
+    // direction (an `unchecked` citation is never deleted) but silently different from the
+    // spaced form, so it has to be disclosed with the fix - the space.
+    expect(description).toMatch(
+      /Written with NO space after the colon, `\[node:report\.pdf\]` and `node_id:report\.pdf` are `unchecked` rather than checked, because the colon glues the name into the id - write a space to have the document checked/,
+    );
     // The old claim ("a URL-valued tag is not a citation at all") is false: the `://` check
     // makes the TAG step aside, reserving nothing, so any document-shaped token elsewhere
     // inside the same brackets is read by the ordinary passes and can come back
@@ -359,9 +397,17 @@ describe("createServer verify_citations tool", () => {
       /A leading `_`, `\.` or `-` fails the shape check even though it is legal inside an UNQUOTED name, so `"_internal draft\.pdf"` is read as `draft\.pdf`/,
     );
     // Containment for the Unicode widening: a BARE name in a script with no word spaces is
-    // not extracted at all, and quoting is the supported route for it. Undisclosed until now.
+    // not extracted at all, and quoting is the supported route for it.
+    //
+    // The second half is the accepted cost of the name-boundary rule: a no-space-script
+    // character is neither a name character nor a boundary, so a Latin-script name written
+    // straight after such text is silent too. That was ruled on deliberately - the
+    // alternative admits those characters into names, which brings back swallowing a whole
+    // clause as a document name, and a false `unresolved` is worse than a silence. Pinned in
+    // the SAME regex as the bare-name half so the disclosed cost cannot rot out while the
+    // capability claim survives.
     expect(description).toMatch(
-      /A BARE name written in a script that does not separate words with spaces \(Han, Hiragana, Katakana, Thai, Lao, Khmer, Myanmar, Tibetan\) is not extracted at all \(`total: 0`\); quote it to have it checked/,
+      /A BARE name written in a script that does not separate words with spaces \(Han, Hiragana, Katakana, Thai, Lao, Khmer, Myanmar, Tibetan\) is not extracted at all \(`total: 0`\), and neither is a Latin-script name written directly against such text with no space between them; quote it to have it checked/,
     );
     expect(description).toMatch(/Single quotes are NOT a delimiter/i);
 
@@ -476,9 +522,37 @@ describe("the prose documentation states the load-bearing claims the tool descri
     expect(readme).toContain(NO_NEAR_MATCH_SUGGESTION.replace(/\s+/g, " "));
   });
 
-  it("says an `unresolved` verdict does not always mean a missing document", () => {
-    expect(readme).toMatch(/`unresolved` does not always mean the document is missing/i);
-    expect(readme).toMatch(/only `suggestion` distinguishes/i);
+  it("says an `unresolved` verdict does not always mean a missing document, and names `title` as the discriminator", () => {
+    // Pinned as ONE ordered conjunction, not two independent assertions: the correction
+    // ("not always missing") without the field that carries the difference is what the
+    // README already said when `title` was null on both, and the field name without the
+    // correction reads as a description of a JSON key rather than a decision rule. `title`
+    // is the machine-readable delete-versus-fix signal (resolver.ts CitationDetail), so
+    // this is the one README claim a consuming agent's operator most needs to be true.
+    expect(readme).toMatch(
+      /`unresolved` does not always mean the document is missing[\s\S]{0,700}`title` is what distinguishes the two/i,
+    );
+  });
+
+  it("states the `title` invariant: non-null if and only if the document was confirmed", () => {
+    // The invariant itself, stated where a reader looks up what the field means rather than
+    // only inside the `unresolved` discussion above. Both directions are pinned in one
+    // expression: "if and only if ... confirmed" and what `null` therefore means. Half of it
+    // alone would let the README claim `title` is "the resolved document's name" again,
+    // which was false the moment an `unresolved` and an `unchecked` began carrying one.
+    expect(readme).toMatch(
+      /`title`[\s\S]{0,200}if and only if[\s\S]{0,200}confirmed that document[\s\S]{0,300}`title: null` means the document was never confirmed to exist/i,
+    );
+  });
+
+  it("tells the operator where a failed lookup is diagnosed", () => {
+    // resolver.ts logLookupFailure writes the only signal an operator ever gets for the most
+    // common production failure, and it goes to stderr rather than into the tool result. A
+    // README that does not say so leaves an outage, a wrong-account key and a backend change
+    // indistinguishable. Pinned together with the stdout prohibition, which is what makes the
+    // channel choice non-negotiable (test/stdout-safety.test.ts).
+    expect(readme).toMatch(/one line to this server's stderr/i);
+    expect(readme).toMatch(/stdout carries the MCP protocol stream/i);
   });
 
   it("states that a document must be named by its exact stored file name", () => {
@@ -521,6 +595,39 @@ describe("the prose documentation states the load-bearing claims the tool descri
   it("discloses in both files that a citation glued to a URL by a sub-delimiter is dropped in every status", () => {
     expect(readme).toMatch(/dropped in every status/i);
     expect(grammarDoc).toMatch(/dropped in every status/i);
+  });
+
+  it("discloses in both files that a name touching a glue character is not extracted at all", () => {
+    // grammar.ts NAME_BOUNDARY is a closed allowlist, so every character outside it - these
+    // nine and every format control - continues an identifier and the name is never emitted.
+    // The counterpart assertion against the live tool description is in the block above; this
+    // is the human-facing half. The worked examples are pinned with the character set,
+    // because a reader who cannot recognize the shape cannot avoid writing it.
+    expect(readme).toMatch(/`\/`, `:`, `%`, `\+`, `@`, `#`, `=`, `&`, `\\`[\s\S]{0,400}sub\/chapter\.pdf/i);
+    expect(grammarDoc).toMatch(/`\/`, `:`, `%`, `\+`, `@`, `#`, `=`, `&`, `\\`[\s\S]{0,400}sub\/chapter\.pdf/i);
+  });
+
+  it("discloses in both files that a scheme-relative or bare-host URL is now silent, not `unresolved`", () => {
+    // This one INVERTED: both files used to warn that these two forms were read as ordinary
+    // document names and could come back `unresolved`. They now yield nothing. A stale
+    // over-reach warning is not harmless here - it tells a reader to go hunting for false
+    // `unresolved` verdicts that the code can no longer produce, and hides the real failure
+    // mode, which is silence.
+    expect(readme).toMatch(
+      /scheme-relative[\s\S]{0,120}bare-host[\s\S]{0,200}(silent|dropped|not extracted|not recognized|yields? nothing)/i,
+    );
+    expect(grammarDoc).toMatch(
+      /scheme-relative[\s\S]{0,120}bare host[\s\S]{0,200}(silent|dropped|not extracted|not recognized|yields? nothing)/i,
+    );
+  });
+
+  it("tells the reader what leaves the machine", () => {
+    // pageindex-client.ts sends `{doc_name}` and `{doc_name, part}` and nothing else - the
+    // draft text never crosses the network. That is the first question anyone asks before
+    // piping an agent's full output through a tool, and it is a fact in this project's
+    // favour, so its absence is a real omission rather than a stylistic one.
+    expect(readme).toMatch(/draft text never leaves this process/i);
+    expect(readme).toMatch(/doc_name/);
   });
 
   // --- claims that now live ONLY in the grammar reference. The exhaustive per-shape detail
