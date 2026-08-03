@@ -6,11 +6,11 @@
   "author": "Piotr Majer",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/piotrMJ/citation-verify-mcp.git"
+    "url": "git+https://github.com/majerpiotr/citation-verify-mcp.git"
   },
-  "homepage": "https://github.com/piotrMJ/citation-verify-mcp#readme",
+  "homepage": "https://github.com/majerpiotr/citation-verify-mcp#readme",
   "bugs": {
-    "url": "https://github.com/piotrMJ/citation-verify-mcp/issues"
+    "url": "https://github.com/majerpiotr/citation-verify-mcp/issues"
   },
   "keywords": [
     "mcp",
