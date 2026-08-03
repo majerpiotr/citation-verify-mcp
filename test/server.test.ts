@@ -384,6 +384,14 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(
       /Written with NO space after the colon, `\[node:report\.pdf\]` and `node_id:report\.pdf` are `unchecked` rather than checked, because the colon glues the name into the id - write a space to have the document checked/,
     );
+    // --- audit fix (Important): the value's end is now a three-way limit, and the third one
+    // (a nested `[`) silences the whole tag. Pinned with its worked example and with the
+    // "a `<name>.pdf` written inside it still is" half, because the rule without that half
+    // reads as "anything inside such a tag is invisible", which would send a reader hunting
+    // for a missing document check that does in fact happen.
+    expect(description).toMatch(
+      /A tag's value ends at the closing `\]`, a newline or a nested `\[`, so a tag whose value contains a `\[` \(`\[node: abc\[1\]\]`\) is not reported at all - though a `<name>\.pdf` written inside it still is/,
+    );
     // The old claim ("a URL-valued tag is not a citation at all") is false: the `://` check
     // makes the TAG step aside, reserving nothing, so any document-shaped token elsewhere
     // inside the same brackets is read by the ordinary passes and can come back
@@ -609,6 +617,17 @@ describe("the prose documentation states the load-bearing claims the tool descri
   it("discloses in both files that a bare name in a script without word spaces is not extracted", () => {
     expect(readme).toMatch(/does not separate words with spaces[\s\S]{0,300}quote/i);
     expect(grammarDoc).toMatch(/does not separate words with spaces[\s\S]{0,300}quote/i);
+  });
+
+  it("discloses in both files that a bracket-tag value ends at a nested `[`", () => {
+    // Substance only: each file must say where the value ends and what a nested `[` costs.
+    // The consequence is a silence, and a silence is only recoverable if it is written down.
+    expect(readme).toMatch(
+      /value ends at the closing `\]`, a newline or a nested `\[`[\s\S]{0,200}not recognized as a tag at all/i,
+    );
+    expect(grammarDoc).toMatch(
+      /a tag whose value contains a `\[` is not recognized as a tag at all[\s\S]{0,200}reports nothing/i,
+    );
   });
 
   it("discloses in both files that a page naming its own document is dropped, not bound", () => {

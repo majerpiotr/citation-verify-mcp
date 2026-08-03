@@ -185,8 +185,15 @@ the space.
 
 `[<word>: <id>]` - a square-bracketed keyword (any run of letters, chosen by whoever wrote the
 citation: `node`, `chunk`, `Source`, ...), a colon (optional surrounding spaces), an id running
-up to the closing `]` or a newline, and a literal `]`. Examples: `[node:some-doc-id-123]`,
-`[chunk: abc-42]`.
+up to the closing `]`, a newline or a nested `[`, whichever comes first, and a literal `]`.
+Examples: `[node:some-doc-id-123]`, `[chunk: abc-42]`.
+
+Because the id stops at a nested `[`, **a tag whose value contains a `[` is not recognized as a
+tag at all**: `[node: abc[1]]` reports nothing rather than an `unchecked` id of `abc[1`. The
+limit exists so that a stray unclosed `[` can neither swallow unrelated later text nor make the
+scan cost grow faster than the draft does. It costs no document its check - the ordinary
+document scan reads the whole text regardless of brackets, so `[Source: report.pdf [v2]]` still
+yields `report.pdf`.
 
 The value is reported **`unchecked`** and never bound to any document outside the brackets -
 its id space has no defined relationship to the backend's per-document node ordinals -
@@ -294,6 +301,8 @@ makes a real space-bearing file name checkable at all.
 - A bare `node_id` with no document in its sentence, or a bracket tag whose value does not name
   a document as a standalone token - both are extracted, but always `unchecked`. So is
   `node_id:<name>.pdf` or `[node:<name>.pdf]` written with no space after the colon.
+- A bracket tag whose value contains a nested `[` - not reported at all, in any status (a
+  `<name>.pdf` inside it still is).
 - A bracket-tag value containing `://`, as an id (a standalone `<name>.pdf` elsewhere in the
   same brackets still is).
 - A document match that is a URL's own path segment, and a scheme-relative or bare-host URL

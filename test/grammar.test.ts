@@ -1113,6 +1113,22 @@ describe("extractCitations - extraction cost stays bounded on adversarial input 
   );
 
   it(
+    "scans many unclosed bracket tags on one line in bounded time",
+    () => {
+      // A sixth quadratic. The bracket-tag value class excluded only "]" and a newline, so
+      // an UNCLOSED "[word:" made the value run to the end of the line and then backtrack
+      // through it looking for a "]" that cannot be there - once per "[" in the text.
+      // Measured before the fix: 109 ms at 4k tags, 429 ms at 8k, 1702 ms at 16k, 6.8 s at
+      // 32k, 27 s at 64k - 4x per doubling. The existing bracket-tag timing test uses ONE
+      // well-formed tag with a long value, which is the linear case, so it never reached
+      // this.
+      const build = (k: number) => "[word: ".repeat(k);
+      expect(expectSubQuadraticScaling(build, 4_000, () => 0)).toBeLessThan(BUDGET_MS);
+    },
+    60_000,
+  );
+
+  it(
     "scans a run of sentence punctuation with no space after it in bounded time",
     () => {
       // A fifth quadratic, and the one with the most ordinary trigger: the dot leaders of a
@@ -1358,6 +1374,32 @@ describe("extractCitations - the node_id: and bracket-tag paths agree when the i
     ]);
     expect(extractCitations("The pointer is node_id: 0003. Here.")).toEqual([
       { token: "node_id:0003", docName: null, pages: null, nodeId: "0003" },
+    ]);
+  });
+});
+
+describe("extractCitations - a bracket-tag value stops at a nested `[` (audit: Important)", () => {
+  // The value class had to stop at "[" to make the scan linear (see the timing guard for the
+  // measurement). The behavioural consequence is stated here rather than left implicit: a tag
+  // whose value contains a "[" is not recognized as a tag at all, so it reports nothing
+  // instead of reporting an opaque `unchecked` id. That is the same direction the "]" and
+  // newline limits already take - a stray "[" cannot swallow unrelated text - and it moves an
+  // entry from `unchecked` to silence, never towards `unresolved`.
+  it("reports nothing for a tag whose value contains a nested bracket", () => {
+    expect(extractCitations("[node: abc[1]]")).toEqual([]);
+  });
+
+  it("still reports an ordinary tag value that contains no bracket", () => {
+    expect(extractCitations("[node: some-doc-id-123]")).toEqual([
+      { token: "node_id:some-doc-id-123", docName: null, pages: null, nodeId: "some-doc-id-123" },
+    ]);
+  });
+
+  it("still checks a real document written inside a tag alongside a nested bracket", () => {
+    // The document scan reads the whole text regardless of brackets, so declining to
+    // recognize the TAG never costs the citation inside it its check.
+    expect(extractCitations("[Source: report.pdf [v2]]")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
     ]);
   });
 });

@@ -482,10 +482,27 @@ const RE_NODE_ID = new RegExp(String.raw`${NODE_ID_KEYWORD}[:=]\s*([^${NAME_BOUN
 // convention ("Source:") for a different citation family, so a future host is likely to
 // invent a third word, and the keyword is never reported anywhere in the resulting
 // Citation - only the id is - so which word was used makes no difference to the verdict.
-// Colon may have horizontal whitespace on either side; the value stops at the closing `]`
-// or a newline, whichever comes first, so a stray unclosed "[" can never swallow unrelated
-// later text.
-const RE_BRACKET_TAG = /\[[A-Za-z]+[ \t]*:[ \t]*([^\]\n]+)\]/gd;
+// Colon may have horizontal whitespace on either side; the value stops at the closing `]`,
+// a newline, or a nested `[`, whichever comes first, so a stray unclosed "[" can never
+// swallow unrelated later text.
+//
+// Audit fix (Important): `[` joined that list to bound the cost, and it is the same limit
+// the other two already express. Without it an UNCLOSED "[word:" let the value run to the
+// end of the line and then backtrack through the whole line looking for a "]" that cannot be
+// there - once per "[" in the text, so a line of them was quadratic. Measured on
+// "[word: " * k: 109 ms at 4k, 429 ms at 8k, 1702 ms at 16k, 6.8 s at 32k, 27 s at 64k,
+// growing 4x per doubling on text this tool does not control. With "[" ending the run, each
+// "[" scans only as far as the next one, and those stretches are disjoint, so the pass is
+// linear; pinned by the timing test in test/grammar.test.ts.
+//
+// The behavioural cost is disclosed in all three user-facing surfaces: a tag whose value
+// contains a "[" is no longer recognized as a tag, so it reports nothing where it used to
+// report an opaque `unchecked` id ("[node: abc[1]]"). That direction is the safe one under
+// CLAUDE.md hard rule 4 - an entry moves from `unchecked` to silence, never towards
+// `unresolved` - and it costs no real citation its check: the document scan reads the whole
+// text regardless of brackets, so a `<name>.pdf` written inside such a tag is still
+// extracted exactly as it would be in prose.
+const RE_BRACKET_TAG = /\[[A-Za-z]+[ \t]*:[ \t]*([^[\]\n]+)\]/gd;
 
 // True when an identifier's own span - a bracket tag's value, or a node_id: id - contains a
 // document name that the bare pass has ALREADY accepted as a standalone token of the

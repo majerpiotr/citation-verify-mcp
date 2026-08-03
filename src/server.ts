@@ -91,6 +91,9 @@ export function createServer(client: DocLookup): McpServer {
         "`unchecked` id, never bound to any document (id space unconfirmed): cite the " +
         "real `<name>.pdf` for a verdict. A value carrying both a slug and a standalone " +
         "document reports only the document. " +
+        "A tag's value ends at the closing `]`, a newline or a nested `[`, so a tag whose " +
+        "value contains a `[` (`[node: abc[1]]`) is not reported at all - though a " +
+        "`<name>.pdf` written inside it still is. " +
         "Written with NO space after the colon, `[node:report.pdf]` and " +
         "`node_id:report.pdf` are `unchecked` rather than checked, because the colon " +
         "glues the name into the id - write a space to have the document checked. " +

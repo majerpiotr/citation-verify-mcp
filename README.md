@@ -418,7 +418,9 @@ The grammar is fixed, not learned, and deliberately narrow. In summary:
   value names a `.pdf` document as a standalone token - then that document is checked exactly
   as it would be in prose. Written with **no space** after the colon, `[node:report.pdf]` and
   `node_id:report.pdf` stay `unchecked` instead: the colon glues the name into the id. Write
-  the space.
+  the space. The value ends at the closing `]`, a newline or a nested `[`, so a tag whose value
+  contains a `[` (`[node: abc[1]]`) is not recognized as a tag at all - though a `.pdf` written
+  inside it is still checked.
 - **A name containing spaces must be quoted** in double quotes or backticks *and* be
   file-name-shaped: at most 4 words, at most 80 characters, **beginning with a letter or
   digit**, and otherwise only letters, digits, spaces, dots, underscores and hyphens.
