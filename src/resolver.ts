@@ -35,13 +35,35 @@ export interface VerifyResult {
   details: CitationDetail[];
 }
 
-// A bare `node_id:` with no document in the same sentence is unverifiable by construction
-// (docs/spike-b-findings.md section 6: node ids are small ordinals scoped inside one
-// document's tree, not a corpus-wide identifier - every document has a node "0000"). This
-// is stated up front so a consuming agent knows to fix the citation, not retry it.
-const BARE_NODE_SUGGESTION =
-  "A node id alone cannot be verified: node ids are scoped to a single document's own " +
-  "numbering, so this citation must also name the document it belongs to.";
+// An identifier that resolves to no document (`docName: null`) is unverifiable by
+// construction, and it reaches here from TWO shapes that grammar.ts deliberately reduces to
+// the identical Citation - a bare `node_id:` with no document in the same sentence, and a
+// bracket tag whose value names no document - so that an equivalent pair dedupes into one
+// (src/grammar.ts, "Canonical token deliberately reuses the exact `node_id:<id>` prefix").
+// This string is therefore read by a model for both, and must be true of both:
+//
+//   - `node_id: <id>` IS this grammar's reading of the backend's real per-document node
+//     ordinal (docs/spike-b-findings.md section 6: small ordinals scoped inside one
+//     document's tree - every document has a node "0000"), so naming the document in the
+//     same sentence genuinely makes it checkable.
+//   - A bracket tag is NOT that. Its value is a host-invented slug from a wholly different,
+//     unconfirmed id space (docs/citation-grammar.md "Bracket-tag identifier": "its id space
+//     has no defined relationship to the backend's per-document node ordinals"), and
+//     grammar.ts never binds a tag to a document however the sentence is written. Telling
+//     the model to name the document alongside it - as this string used to, flatly - is a
+//     repair instruction that cannot work, handed over on the one status where the model is
+//     told to delete nothing.
+//
+// Splitting the constant would need the two shapes to be distinguishable at this layer;
+// they are not, by design, so the text names both cases instead of asserting one.
+const UNBOUND_ID_SUGGESTION =
+  "This citation names no document, so there was nothing to check it against - which is " +
+  "not evidence that anything is missing. If it was written as `node_id: <id>`, that is a " +
+  "per-document node ordinal: name the document in the same sentence to have the node " +
+  "checked. If it came from a bracket tag (`[node: <id>]`), the id is never bound to any " +
+  "document and its id space has no defined relationship to the backend's node numbering, " +
+  "so no rewording of the tag can make it checkable - cite the document's real " +
+  "`<name>.pdf` for a verdict.";
 
 // The backend's own near-name hint (`similar_files`) fires when the extension is missing or
 // its case is wrong, but comes back EMPTY when the case of the name's stem differs
@@ -184,7 +206,7 @@ async function classify(
   // Step 1: a bare node id with no document is unverifiable by construction. The backend is
   // never touched for it.
   if (docName === null) {
-    return { token, status: "unchecked", title: null, suggestion: BARE_NODE_SUGGESTION };
+    return { token, status: "unchecked", title: null, suggestion: UNBOUND_ID_SUGGESTION };
   }
 
   // Step 2: does the document exist at all? A throw, or anything the client could not turn

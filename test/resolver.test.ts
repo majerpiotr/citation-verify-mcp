@@ -246,6 +246,47 @@ describe("verifyCitations", () => {
     expect(getNodeIdsCalls).toEqual([]);
   });
 
+  // A bracket-tag identifier reaches the resolver as the SAME Citation a bare `node_id:`
+  // does (grammar.ts deliberately emits `node_id:<value>` for both, so the two dedupe into
+  // one), and the old suggestion answered only for the bare form: it told the model the id
+  // was a per-document node ordinal and that naming the document alongside it would make it
+  // checkable. For a bracket tag that is false in both halves - docs/citation-grammar.md
+  // "Bracket-tag identifier" says its id space has no defined relationship to the backend's
+  // per-document node ordinals, and grammar.ts never binds a tag to a document however the
+  // sentence is written. So the model was handed a repair instruction that cannot work, on
+  // the one status where it is told to delete nothing. One string serves both shapes because
+  // the resolver cannot tell them apart by construction; it must therefore be true of both.
+  it("tells a bracket-tag id what it actually is, not that it is a per-document node ordinal", async () => {
+    const { client, getDocumentCalls, getNodeIdsCalls } = fakeClient({});
+    const r = await verifyCitations("See [node: some-doc-id-123] for detail.", client);
+    expect(r.details).toHaveLength(1);
+    // The verdict is not what changed and must not: an id that resolves to no document is
+    // unverifiable by construction (CLAUDE.md hard rule 4).
+    expect(r.details[0]?.status).toBe("unchecked");
+    expect(r.details[0]?.title).toBeNull();
+    const suggestion = r.details[0]?.suggestion ?? "";
+    // The bracket-tag half: never bound to a document, id space unrelated to node
+    // numbering, and the repair that DOES work.
+    expect(suggestion).toMatch(/bracket tag/i);
+    expect(suggestion).toMatch(/never bound to any document/i);
+    expect(suggestion).toMatch(/no defined relationship to the backend's node numbering/i);
+    expect(suggestion).toMatch(/cite the document's real `<name>\.pdf`/i);
+    // ...and the claim that was wrong for this shape must no longer be stated flatly of it.
+    expect(suggestion).not.toMatch(/this citation must also name the document it belongs to/i);
+    expect(getDocumentCalls).toEqual([]);
+    expect(getNodeIdsCalls).toEqual([]);
+  });
+
+  // The other half of the same one string: the bare `node_id:` form keeps the advice that is
+  // true of IT - the node ordinal is per-document, so naming the document works.
+  it("keeps the per-document repair advice for a bare node_id:", async () => {
+    const { client } = fakeClient({});
+    const r = await verifyCitations("node_id: 0007", client);
+    const suggestion = r.details[0]?.suggestion ?? "";
+    expect(suggestion).toMatch(/per-document node ordinal/i);
+    expect(suggestion).toMatch(/name the document in the same sentence/i);
+  });
+
   it("resolves a citation whose page falls inside the real page count", async () => {
     const { client } = fakeClient({
       documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
