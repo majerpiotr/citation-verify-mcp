@@ -65,7 +65,7 @@ Whoever provisions the key should be aware of that.
 **Argument:** `doc_name`, a string. `doc_id` is NOT accepted:
 
 ```
-args: { doc_id: "pi-cms9..." }
+args: { doc_id: "pi-xxxx..." }
 -> isError: true, "Invalid arguments for tool get_document: doc_name ... expected string, received undefined"
 ```
 
@@ -173,8 +173,10 @@ makes a real node look absent, which becomes a false `unresolved`.
 **inside one document's tree**. They are not document identifiers, and they are not
 unique across the corpus - every document has a node `"0000"`.
 
-The document namespace is separate: `pi-cms9fe2s70bd701pgbsh9v14b`. Those ids appear in
-the REST listing but are NOT accepted by `get_document`, which wants the file name.
+The document namespace is separate: `pi-` followed by 25 lowercase alphanumeric characters,
+e.g. `pi-xxxxxxxxxxxxxxxxxxxxxxxxx` (a placeholder of the observed shape; the real ids seen
+during this spike are account-specific and are not reproduced here). Those ids appear in the
+REST listing but are NOT accepted by `get_document`, which wants the file name.
 
 **Consequence for `design.md` section 5.** Its default pattern `node_id[:=]\s*(<token>)`
 extracts a node id and the resolver was written to send it as a document identifier. Every

@@ -1,5 +1,15 @@
 # Rework plan - aligning the server with confirmed backend behaviour
 
+> ## COMPLETED AND SUPERSEDED - HISTORICAL RECORD, NOT DOCUMENTATION
+>
+> This plan describes work that has since been carried out, and it is kept unchanged as a
+> record of why the code changed. It was itself revised during execution, so its code
+> blocks and task descriptions do not all match what shipped.
+>
+> **Do not implement from this document, and do not cite it as current behaviour.**
+> Read instead: `spike-b-findings.md` (observed backend behaviour), `design.md` (the
+> approved design), and `../README.md` (how the shipped server actually behaves).
+
 > Supersedes `implementation-plan.md` Tasks 2-8 where they conflict. Driven by
 > `spike-b-findings.md`, which replaced this project's three load-bearing assumptions:
 > the transport, the lookup argument, and the found/not-found discriminator.

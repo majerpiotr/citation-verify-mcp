@@ -1,5 +1,24 @@
 # citation-verify-mcp Implementation Plan
 
+> ## SUPERSEDED - HISTORICAL RECORD, NOT DOCUMENTATION
+>
+> This is the original task-by-task build plan, kept unchanged as a record of how the
+> project was built. **It is out of date and parts of it are wrong.** Probing the live
+> backend (`spike-b-findings.md`) invalidated three load-bearing assumptions baked into
+> the text and the code blocks below: the transport (this plan assumes a spawned
+> `pageindex-mcp` child process over stdio, which does not work), the lookup argument,
+> and the found/not-found discriminator. Several code blocks here contain defects that
+> were found and fixed later.
+>
+> **Do not implement from this document, and do not cite it as current behaviour.**
+> Read instead, in this order:
+>
+> - `spike-b-findings.md` - observed backend behaviour, the ground truth
+> - `spike-a-findings.md` - what real consuming applications actually emit
+> - `design.md` - the approved design, revised against those findings
+> - `rework-plan.md` - the rework the findings forced (also historical; see its own banner)
+> - `../README.md` - how the shipped server actually behaves
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a standalone, pluggable MCP server (`verify_citations`) that deterministically checks whether an agent's citations resolve against PageIndex.

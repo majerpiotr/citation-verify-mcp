@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Read-only token: this workflow builds and tests, it never writes to the repo.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the floor declared in package.json `engines`, and it is the one that
+        # matters here: development happens on 24, so without this entry nothing ever
+        # proves the stated minimum still builds and passes. 22 and 24 are the other
+        # supported lines.
+        node-version: ["20", "22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+
+      # `build` cleans dist/ first, so this also proves a from-scratch compile.
+      - run: npm run build
+
+      - run: npm run typecheck
+
+      # The unit suite is fully offline. PAGEINDEX_API_KEY is deliberately NOT set and
+      # no secret is referenced anywhere in this workflow, so test/integration.test.ts
+      # skips itself. The credential-gated suite is not runnable from CI by design.
+      - run: npm test

@@ -7,3 +7,9 @@ key.txt
 .env
 .env.*
 *.env
+
+# internal review workspace - never publish
+.superpowers/
+
+# macOS
+.DS_Store
