@@ -630,7 +630,15 @@ describe("extractCitations - generic bracket-tag citation (spike A addition 3)",
     // checked and reported `unresolved`, not preserved by policy. Corrected: the
     // bracket-tag machinery steps aside when the value is document-shaped and lets the
     // ordinary document scan read the real citation out of it.
-    expect(extractCitations("See [node:report.pdf] for details.")).toEqual([
+    //
+    // Final-review amendment: the input needs the space that a tag in real output carries.
+    // The step-aside is now decided by the ONE question "would the bare pass accept a
+    // document starting in these characters", so that the two paths cannot disagree; with no
+    // space after the keyword's colon the name's left neighbour is that colon, which is an
+    // identifier continuation ("ns:chapter.pdf"), so neither path checks it. That case is
+    // pinned separately, in the Minor 7 block - it reports `unchecked`, which keeps the
+    // citation, so the direction is the safe one.
+    expect(extractCitations("See [node: report.pdf] for details.")).toEqual([
       { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
     ]);
   });
@@ -713,21 +721,24 @@ describe("extractCitations - a bare match that is part of a URL is not read as a
     ).toEqual([{ token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null }]);
   });
 
-  it("deliberate scope decision: a scheme-relative URL ('//host/doc.pdf') is NOT excluded", () => {
-    // "://" is the one unambiguous signal used, matching the bracket-tag path's own rule
-    // exactly. Bare "//" is a much weaker signal (it is not unique to URLs) and is left
-    // unhandled rather than guessed at - see the comment on isUrlPrefixed in
-    // src/grammar.ts for the full reasoning.
-    expect(extractCitations("See //example.com/report.pdf for details.")).toEqual([
-      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
-    ]);
+  it("does not need the '://' signal to leave a scheme-relative URL's path alone", () => {
+    // The URL guard still recognizes only "://", matching the bracket-tag path's own rule
+    // exactly: bare "//" is a much weaker signal and is deliberately not guessed at. These
+    // two inputs USED to be extracted for that reason, and the final review's run-END guard
+    // makes the question moot from the other side - a name preceded by "/" is the last
+    // segment of a path, not a standalone token, and a real document name cannot contain a
+    // "/" at all. The guard the bracket-tag path already applied to "sub/chapter.pdf" now
+    // applies here too, so the two agree for a second reason rather than by coincidence.
+    expect(extractCitations("See //example.com/report.pdf for details.")).toEqual([]);
   });
 
-  it("deliberate scope decision: a bare host with no scheme marker ('host/doc.pdf') is NOT excluded", () => {
-    // There is no reliable syntactic signal that distinguishes "a domain" from an ordinary
-    // dotted document-name segment - DOC_NAME_PATTERN already allows dots and hyphens in a
-    // real name - so guessing here would risk rejecting a legitimate name.
-    expect(extractCitations("See example.com/report.pdf for details.")).toEqual([
+  it("leaves a bare host's path alone as well, for the same reason", () => {
+    expect(extractCitations("See example.com/report.pdf for details.")).toEqual([]);
+  });
+
+  it("still extracts a name that merely follows a host name, with a boundary between them", () => {
+    // Containment: the "/" rule above must not spread to text that only mentions a domain.
+    expect(extractCitations("On example.com, see report.pdf for details.")).toEqual([
       { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
     ]);
   });
@@ -820,10 +831,72 @@ describe("extractCitations - containment: a bare name in a script with no word s
     ]);
   });
 
-  it("still extracts a space-delimited name glued directly to no-space-script text", () => {
-    expect(extractCitations("詳細はreport.pdf をご覧ください。")).toEqual([
-      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+  it("does not extract a Latin-script name glued directly to no-space-script text either", () => {
+    // Final-review fix (Critical 1). This case USED to be extracted, and that permission is
+    // exactly what truncated a real mixed-script name to a fragment: the grammar cannot tell
+    // "詳細はreport.pdf" (a whole Latin name after a particle) from "報告書2024.pdf" (the tail
+    // of a single mixed name), because the two are the identical shape - a run of name
+    // characters starting immediately after a no-space-script character. One of the two has
+    // to give, and emitting "2024.pdf" for the second is the deletion direction, so the
+    // permission is withdrawn for both. The cost is under-reach: the name here goes
+    // unverified. Silence is the safe direction (CLAUDE.md hard rule 4), and quoting remains
+    // the exact route.
+    expect(extractCitations("詳細はreport.pdf をご覧ください。")).toEqual([]);
+  });
+});
+
+describe("extractCitations - a name mixing a no-space script with Latin or digits is never truncated to a fragment (final review: Critical 1)", () => {
+  // The containment above (no-space-script characters END a name run) did NOT produce the
+  // silence it claimed for the common real shape of a CJK file name: a name that MIXES such
+  // a script with Latin letters or digits was cut at the script boundary and the surviving
+  // FRAGMENT was checked as though it were the document. With the real document present in
+  // the corpus, "会议纪要_v2.pdf" was looked up as "_v2.pdf", came back `unresolved`, and a
+  // consuming agent deleted a correctly cited, genuinely present source - the precise
+  // failure CLAUDE.md hard rule 4 exists to prevent.
+  it("does not emit a fragment of a Han name carrying an ASCII suffix", () => {
+    expect(extractCitations("The figures come from 会议纪要_v2.pdf.")).toEqual([]);
+  });
+
+  it("does not emit a fragment of a Han name carrying digits", () => {
+    expect(extractCitations("See 報告書2024.pdf for the breakdown.")).toEqual([]);
+  });
+
+  it("does not emit a fragment of a Han name carrying a hyphenated Latin word", () => {
+    expect(extractCitations("報告書-annual.pdf")).toEqual([]);
+  });
+
+  it("does not emit a fragment of a Kana name carrying digits", () => {
+    expect(extractCitations("レポート2024.pdf")).toEqual([]);
+  });
+
+  it("does not emit a fragment of a Thai name carrying digits", () => {
+    expect(extractCitations("รายงาน2024.pdf")).toEqual([]);
+  });
+
+  it("extracts the whole mixed-script name when it is quoted", () => {
+    // Containment for the silence above: quoting is the supported, exact route, and it must
+    // still deliver the name verbatim - otherwise the fix trades a fragment for a tool that
+    // cannot check these names at all.
+    expect(extractCitations('The figures come from "会议纪要_v2.pdf".')).toEqual([
+      { token: "会议纪要_v2.pdf", docName: "会议纪要_v2.pdf", pages: null, nodeId: null },
     ]);
+  });
+});
+
+describe("extractCitations - a name glued to other text by a character outside the name class is not read as a document (final review: Critical 1, related class)", () => {
+  // Same class, same direction: any character that is neither a name character nor a
+  // recognized prose boundary used to cut the run and let the TAIL be emitted as a document.
+  // A fragment must never be emitted, whatever cut it out.
+  it("does not emit the tail of a name joined by a plus", () => {
+    expect(extractCitations("report+final.pdf")).toEqual([]);
+  });
+
+  it("does not emit the tail of a name joined by an at sign", () => {
+    expect(extractCitations("report@2024.pdf")).toEqual([]);
+  });
+
+  it("does not emit the tail of a name joined by a zero-width non-joiner", () => {
+    expect(extractCitations("report‌nonjoin.pdf")).toEqual([]);
   });
 });
 
@@ -1006,6 +1079,53 @@ describe("extractCitations - extraction cost stays bounded on adversarial input 
     },
     60_000,
   );
+
+  // The two assertions below are RATIO assertions as well as absolute ones. A wall-clock
+  // threshold on a shared CI box or a loaded laptop is a flake generator, and its failure
+  // reads as "the grammar regressed" when it means "the machine was busy"; the ratio between
+  // two input sizes is machine-independent. Quadratic cost grows 16x per 4x of input and
+  // cubic grows ~64x, so a ceiling of 8x (plus a floor that absorbs timer noise on inputs
+  // that now cost single-digit milliseconds) separates them from linear without depending on
+  // how fast the machine is.
+  const SCALING_CEILING = 8;
+  const SCALING_FLOOR_MS = 50;
+
+  function expectSubQuadraticScaling(build: (k: number) => string, k: number, citations: (k: number) => number) {
+    const small = msToExtract(build(k), citations(k));
+    const large = msToExtract(build(k * 4), citations(k * 4));
+    expect(large).toBeLessThan(SCALING_CEILING * small + SCALING_FLOOR_MS);
+    return large;
+  }
+
+  it(
+    "scans citations glued together by URL-legal characters in bounded time",
+    () => {
+      // A third quadratic: the URL guard re-scanned the whole preceding run of URL
+      // characters once per match. "," continues a URL run, so a comma-separated source list
+      // with no whitespace - an entirely ordinary shape - made every match re-scan the whole
+      // draft. Measured before the fix: 8206 ms on the 16k form, growing 4x per doubling.
+      // None of the four tests above reaches it, because whitespace or a quote ends the run
+      // in all of them. All the names dedupe to one citation.
+      const build = (k: number) => "y" + ",a.pdf".repeat(k);
+      expect(expectSubQuadraticScaling(build, 4_000, () => 1)).toBeLessThan(BUDGET_MS);
+    },
+    60_000,
+  );
+
+  it(
+    "binds nodes to documents across a draft full of both in bounded time",
+    () => {
+      // A fourth, and the worst: the node-binding loop was nodes x documents x
+      // sentence-boundaries, i.e. cubic, on the most ordinary draft shape there is - every
+      // sentence citing one document and one node. Measured before the fix: 11592 ms for a
+      // 100 KB draft carrying 3200 citations, growing ~8x per doubling. None of the four
+      // tests above builds both node mentions and document mentions.
+      const build = (k: number) =>
+        Array.from({ length: k }, (_, i) => `See doc${i}.pdf, node_id: ${i}. `).join("");
+      expect(expectSubQuadraticScaling(build, 800, (k) => k)).toBeLessThan(BUDGET_MS);
+    },
+    60_000,
+  );
 });
 
 describe("extractCitations - the URL exclusion covers the quoted pass too (re-review fix: Minor 4)", () => {
@@ -1022,6 +1142,225 @@ describe("extractCitations - the URL exclusion covers the quoted pass too (re-re
       extractCitations('See https://example.com/context.pdf and then "Annual Report.pdf" here.'),
     ).toEqual([
       { token: "Annual Report.pdf", docName: "Annual Report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+});
+
+describe("extractCitations - a name glued into a longer token in ordinary prose is not a citation (final review: defect D1)", () => {
+  // The bare pattern had a run-START guard and no run-END guard, so a name glued into a
+  // longer token leaked a FABRICATED citation out of ordinary prose: "report.pdfx" yielded
+  // "report.pdf", reported `unresolved`, and a consuming agent deletes what comes back
+  // `unresolved`. The bracket-tag path already applied the OPPOSITE rule to these exact
+  // strings (they stay `unchecked` there), and the comment above containsStandaloneDocName
+  // argues that two syntaxes disagreeing about the same string is what CLAUDE.md hard rule 4
+  // forbids. Prose is the third syntax and it disagreed with both.
+  it("does not read a name with a trailing letter as a document", () => {
+    expect(extractCitations("See report.pdfx for details.")).toEqual([]);
+  });
+
+  it("does not read a name with a trailing digit as a document", () => {
+    expect(extractCitations("The file report.pdf2 is stale.")).toEqual([]);
+  });
+
+  it("does not read a .pdf-shaped substring inside a dotted token as a document", () => {
+    expect(extractCitations("Chunk id 2024.pdf.chunk3 was used.")).toEqual([]);
+  });
+
+  it("does not read a .pdf-shaped prefix of a hyphenated token as a document", () => {
+    expect(extractCitations("Look at v1.pdf-part2 please")).toEqual([]);
+  });
+
+  it("does not read the final segment of a path as a document", () => {
+    expect(extractCitations("Path is sub/chapter.pdf here.")).toEqual([]);
+  });
+
+  it("does not read a name glued to a page keyword as a document", () => {
+    expect(extractCitations("report.pdfpage 5 is odd")).toEqual([]);
+  });
+
+  it("agrees with the bracket-tag path on every one of those strings", () => {
+    // The two syntaxes name the same character sequence; neither may report it as a
+    // checkable document. The bracket form carries an id claim, so it reports `unchecked`;
+    // prose carries no id claim, so it reports nothing. What must match is the one thing
+    // that decides deletion: no docName anywhere.
+    for (const id of ["report.pdfx", "report.pdf2", "2024.pdf.chunk3", "v1.pdf-part2", "sub/chapter.pdf"]) {
+      expect(extractCitations(`See ${id} here.`).map((c) => c.docName)).toEqual([]);
+      expect(extractCitations(`[node: ${id}] here.`)).toEqual([
+        { token: `node_id:${id}`, docName: null, pages: null, nodeId: id },
+      ]);
+    }
+  });
+});
+
+describe("extractCitations - containment for the boundary rule: ordinary prose punctuation still delimits a name", () => {
+  // Hunting the victim of the run-END guard above. A boundary rule tightened one notch too
+  // far swallows real citations, which is the mirror failure: a tool that extracts nothing
+  // verifies nothing. Every shape here is ordinary agent output and must still be checked.
+  const oneDoc = [{ token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null }];
+
+  it("extracts a name that is the whole text", () => {
+    expect(extractCitations("report.pdf")).toEqual(oneDoc);
+  });
+
+  it("extracts a name in parentheses", () => {
+    expect(extractCitations("The source (report.pdf) is current.")).toEqual(oneDoc);
+  });
+
+  it("extracts a name followed by a possessive apostrophe", () => {
+    expect(extractCitations("report.pdf's figures are current.")).toEqual(oneDoc);
+  });
+
+  it("extracts a name followed by an exclamation mark", () => {
+    expect(extractCitations("The file is report.pdf!")).toEqual(oneDoc);
+  });
+
+  it("extracts a name wrapped in markdown emphasis", () => {
+    expect(extractCitations("See **report.pdf** for details.")).toEqual(oneDoc);
+  });
+
+  it("extracts the link text of a markdown link", () => {
+    expect(extractCitations("See [report.pdf](https://example.com/x) for details.")).toEqual(oneDoc);
+  });
+
+  it("extracts every name in a comma-separated source list", () => {
+    expect(extractCitations("Sources: a.pdf,b.pdf,c.pdf")).toEqual([
+      { token: "a.pdf", docName: "a.pdf", pages: null, nodeId: null },
+      { token: "b.pdf", docName: "b.pdf", pages: null, nodeId: null },
+      { token: "c.pdf", docName: "c.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("extracts a name followed by a typographic dash", () => {
+    expect(extractCitations("report.pdf—the only source—is current.")).toEqual(oneDoc);
+  });
+
+  it("still binds a page marker to a name followed by an opening bracket", () => {
+    expect(extractCitations("report.pdf (page 5) is the source.")).toEqual([
+      { token: "report.pdf#p5", docName: "report.pdf", pages: { from: 5, to: 5 }, nodeId: null },
+    ]);
+  });
+
+  it("extracts a name followed by a colon introducing a clause", () => {
+    // A trailing ":" is punctuation when a boundary follows it, and a continuation otherwise
+    // ("ns:chapter.pdf"). Without that asymmetry this ordinary shape went silent.
+    expect(extractCitations("report.pdf: the figures are current.")).toEqual(oneDoc);
+  });
+
+  it("does not read the tail of a namespaced id as a document", () => {
+    // The other half of the same asymmetry, kept here so the two are read together.
+    expect(extractCitations("The pointer is ns:report.pdf here.")).toEqual([]);
+  });
+});
+
+describe("extractCitations - an identifier's tail never escapes as a document, whatever separates it (final review: Important 3)", () => {
+  // The identifier-continuation class used to be a closed list of characters, so a slug
+  // separated by any OTHER character left its ".pdf" tail looking standalone: the bracket tag
+  // stepped aside and the bare pass checked the fragment. Worse on the node_id: path, whose
+  // own id charset ended at the same characters: "node_id: ns:chapter.pdf" reported
+  // "chapter.pdf#nns" - a fabricated document name AND a fabricated node id in one token,
+  // `unresolved`, i.e. deleted.
+  const glued = [
+    "doc%20name.pdf",
+    "ns:chapter.pdf",
+    "abc+report.pdf",
+    "a@b.pdf",
+    "id#3.pdf",
+    "sub/chapter.pdf",
+  ];
+
+  it("reports a glued id as one unchecked node, never as a document", () => {
+    for (const id of glued) {
+      expect(extractCitations(`[node: ${id}] confirms the figure.`)).toEqual([
+        { token: `node_id:${id}`, docName: null, pages: null, nodeId: id },
+      ]);
+    }
+  });
+
+  it("makes the node_id: path agree with the bracket-tag path on every one of them", () => {
+    for (const id of glued) {
+      expect(extractCitations(`The pointer is node_id: ${id} here.`)).toEqual(
+        extractCitations(`[node: ${id}] here.`),
+      );
+    }
+  });
+
+  it("keeps the whole id in the reported token rather than a prefix of it", () => {
+    expect(extractCitations("node_id=abc+report.pdf")).toEqual([
+      {
+        token: "node_id:abc+report.pdf",
+        docName: null,
+        pages: null,
+        nodeId: "abc+report.pdf",
+      },
+    ]);
+  });
+});
+
+describe("extractCitations - the node_id: and bracket-tag paths agree when the id IS a document name (final review: Minor 7)", () => {
+  // The bracket path steps aside for a standalone document name precisely so a fabricated
+  // "[cite: invented-report.pdf]" cannot hide behind `unchecked`. The node_id: path did not,
+  // so "node_id: invented-report.pdf" still hid - and a comment claimed the two paths agree,
+  // with no test defending it.
+  //
+  // What the two paths guarantee, now pinned rather than asserted: they agree on whether the
+  // id names a checkable document, which is the only part of the answer that can lead to a
+  // deletion. They are NOT byte-identical, and the last test here pins the one place they
+  // differ: a bracket value is terminated by "]", so a trailing "." or ":" inside it is part
+  // of what the author wrote, while the same character in prose is sentence punctuation and
+  // is stripped. That difference only ever changes an `unchecked` token's text.
+  it("checks the document in both syntaxes when the id is a standalone name", () => {
+    const expected = [{ token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null }];
+    expect(extractCitations("The pointer is node_id: report.pdf here.")).toEqual(expected);
+    expect(extractCitations("[node: report.pdf] here.")).toEqual(expected);
+  });
+
+  it("reports both syntaxes as one unchecked node when the name is glued to the keyword's colon", () => {
+    // Accepted, pinned consequence of the single boundary rule: with no space after the
+    // colon the name is not a standalone token in the text, so neither syntax checks it.
+    // `unchecked` keeps the citation, so the direction is safe.
+    expect(extractCitations("[node:report.pdf] here.")).toEqual(
+      extractCitations("node_id:report.pdf here."),
+    );
+    expect(extractCitations("[node:report.pdf] here.")).toEqual([
+      { token: "node_id:report.pdf", docName: null, pages: null, nodeId: "report.pdf" },
+    ]);
+  });
+
+  it("still binds an ordinary ordinal node id to the document in its sentence", () => {
+    expect(extractCitations("See report.pdf, node_id: 0003.")).toEqual([
+      { token: "report.pdf#n0003", docName: "report.pdf", pages: null, nodeId: "0003" },
+    ]);
+  });
+
+  it("carries a trailing dot only where the syntax makes it part of the id", () => {
+    // The one remaining difference between the two paths, pinned so the claim above is
+    // defended rather than asserted: inside brackets the "]" ends the value, so a trailing
+    // "." belongs to the id; in prose it ends the sentence and is stripped. Neither reports a
+    // document, so neither can cause a deletion.
+    expect(extractCitations("[node: 0003.] here.")).toEqual([
+      { token: "node_id:0003.", docName: null, pages: null, nodeId: "0003." },
+    ]);
+    expect(extractCitations("The pointer is node_id: 0003. Here.")).toEqual([
+      { token: "node_id:0003", docName: null, pages: null, nodeId: "0003" },
+    ]);
+  });
+});
+
+describe("extractCitations - a reserved span that merely TOUCHES a document match does not suppress it (final review: Minor 8.1)", () => {
+  // The reserved-span rewrite replaced a [start, end) pair list with a byte mask, and the one
+  // semantic it had to preserve - overlap suppresses, adjacency does not - was pinned by
+  // nothing: changing `mask.subarray(start, end)` to `end + 1` passed the whole suite. An
+  // off-by-one there deletes a real citation from the output in EVERY status, which reads to
+  // a consuming agent as "nothing here needed checking".
+  it("extracts a bare name whose last character abuts a quoted name's opening delimiter", () => {
+    expect(extractCitations('The sources are report.pdf"annual review.pdf" today.')).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+      {
+        token: "annual review.pdf",
+        docName: "annual review.pdf",
+        pages: null,
+        nodeId: null,
+      },
     ]);
   });
 });
