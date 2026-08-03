@@ -42,6 +42,12 @@ export function createServer(client: DocLookup): McpServer {
         "citation - unless its `title` is non-null, which means the document exists and " +
         "only the page or node missed, in which case fix that instead (`suggestion` " +
         "says which half missed). " +
+        "A near-miss name in `suggestion` is a diagnostic, NOT a rename target: only " +
+        "existence is checked, so swapping the suggested name in and leaving the claim as " +
+        "written turns a caught fabrication into an uncaught one - the citation resolves " +
+        "while nothing has checked whether that document supports the claim. Confirm the " +
+        "suggested document actually supports the claim before citing it, or drop the " +
+        "claim. " +
         "Do NOT remove `unchecked` citations - the corpus was never consulted " +
         "for them and they may well be valid; do not delete them. If the call itself " +
         "fails, the tool returns an MCP error result instead of this JSON; treat every " +

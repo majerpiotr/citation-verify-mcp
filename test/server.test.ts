@@ -236,6 +236,19 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(
       /For each `unresolved` citation, remove the claim or replace it with a verified citation - unless its `title` is non-null, which means the document exists and only the page or node missed, in which case fix that instead \(`suggestion` says which half missed\)\./,
     );
+    // --- the rename caution. README.md has carried it since before this description did,
+    // and the asymmetry was the dangerous half: a human reads the README once at
+    // integration time, while THIS string is read by the model on every call, and the
+    // model is what edits the draft. "replace it with a verified citation" (immediately
+    // above) plus a `suggestion` reading `Did you mean "report.pdf"?` is close to an
+    // instruction to perform the exact substitution that converts a caught fabrication
+    // into an uncaught one - the citation resolves, and nothing checked whether the real
+    // document supports the claim. Pinned as ONE conjunction (diagnostic-not-rename-target,
+    // the reason, and the consequence) so a rewording cannot keep the label while dropping
+    // what makes it actionable.
+    expect(description).toMatch(
+      /A near-miss name in `suggestion` is a diagnostic, NOT a rename target: only existence is checked, so swapping the suggested name in and leaving the claim as written turns a caught fabrication into an uncaught one/,
+    );
     // --- outage-safety imperatives - the reason clause ("the corpus was never consulted...")
     // is pinned together with "Do NOT remove", not just the trailing "do not delete them" ---
     expect(description).toMatch(
@@ -569,6 +582,15 @@ describe("the prose documentation states the load-bearing claims the tool descri
     // which was false the moment an `unresolved` and an `unchecked` began carrying one.
     expect(readme).toMatch(
       /`title`[\s\S]{0,200}if and only if[\s\S]{0,200}confirmed that document[\s\S]{0,300}`title: null` means the document was never confirmed to exist/i,
+    );
+  });
+
+  it("warns that a near-name suggestion is not a rename target", () => {
+    // Counterpart to the tool-description assertion of the same claim above, so the two
+    // surfaces cannot drift apart on it again - this one existed here first, and its
+    // absence from the description was the gap: the model, not the human, is what acts.
+    expect(readme).toMatch(
+      /a diagnostic, not a licence to rename a citation and keep the same claim[\s\S]{0,600}converts a caught fabrication into an uncaught one/i,
     );
   });
 
