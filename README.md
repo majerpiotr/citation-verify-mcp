@@ -536,6 +536,15 @@ npx vitest run test/<file>.test.ts   # a single test file
 npm run build                        # tsc -> dist/
 ```
 
+**Running the tests needs a newer Node than running the server does: development requires
+Node.js 20.13.0 or newer**, while the built server itself runs on any Node 20 (measured on
+20.0.0), which is what `engines` declares. The gap is a dev-toolchain limit, not a runtime
+one: vitest 4 bundles with rolldown, which calls `util.styleText` with an array of formats,
+and array support arrived in Node 20.13.0. On 20.12.2 `npm install`, `npm run build` and
+`npm run typecheck` all succeed and only `npm test` dies, with an `ERR_INVALID_ARG_VALUE`
+stack inside `node_modules` that names nothing about Node versions. CI runs the exact
+floor version rather than a moving major, so a break in it is visible.
+
 The unit suite builds against fake lookup implementations, so it needs no API key and no
 network. The integration test (`test/integration.test.ts`) is the only suite that touches the
 real PageIndex backend, and it is credential-gated: it skips cleanly, never fails, when its

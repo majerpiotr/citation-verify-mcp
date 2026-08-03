@@ -16,11 +16,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 20 is the floor declared in package.json `engines`, and it is the one that
-        # matters here: development happens on 24, so without this entry nothing ever
-        # proves the stated minimum still builds and passes. 22 and 24 are the other
-        # supported lines.
-        node-version: ["20", "22", "24"]
+        # EXACT versions, never a bare major. `node-version: "20"` resolves to whatever
+        # 20.x is newest on the day the job runs, so it exercises no declared floor at
+        # all - which is how a real floor break went unnoticed: `npm test` fails on Node
+        # 20.12.2 (vitest 4 bundles with rolldown, which calls `util.styleText` with an
+        # array of formats; array support arrived in 20.13.0), while CI stayed green on
+        # the newest 20.x throughout.
+        #
+        # 20.13.0 is the measured DEVELOPMENT floor and the load-bearing entry: it is the
+        # oldest release on which `npm ci`, `npm run build`, `npm run typecheck` and
+        # `npm test` all pass, and the README's Development section publishes the same
+        # number (test/toolchain.test.ts pins the two together). It is NOT the runtime
+        # floor - `package.json` `engines` stays `>=20`, and the built server was measured
+        # completing a full MCP session on Node 20.0.0. That lower floor cannot be covered
+        # here, because the suite that would prove it is the thing that will not run.
+        #
+        # 22.22.2 and 24.17.0 are the current heads of the other supported lines. Bump
+        # them deliberately, and re-measure the floor entry before raising IT.
+        node-version: ["20.13.0", "22.22.2", "24.17.0"]
     steps:
       - uses: actions/checkout@v4
 
