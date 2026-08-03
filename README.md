@@ -338,7 +338,9 @@ terminate TLS in front of it, or run it on loopback.
 
 The server refuses to start - logging to stderr and exiting non-zero - if
 `PAGEINDEX_API_KEY` is missing, blank, looks like an unfilled placeholder (an unsubstituted
-`${...}` reference, or a literal `your-api-key`-style value), or carries a control character
+`${...}` reference, anything still wrapped in angle brackets - including the
+`<your-pageindex-api-key>` the config blocks above ship - or a literal `your-api-key`-style
+value, with or without a product word in the middle), or carries a control character
 *inside* the value. That last case is the easy one to misread: a key that got line-wrapped on
 paste, or a two-line key file read whole, is a real key the server still refuses, because no
 control character can legally sit in an `Authorization` header. Surrounding whitespace is

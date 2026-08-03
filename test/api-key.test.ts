@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describeStartupFailure, isUsableApiKey, redactSecret } from "../src/api-key.js";
 
 describe("isUsableApiKey", () => {
@@ -60,8 +62,49 @@ describe("isUsableApiKey", () => {
     expect(isUsableApiKey("yourapikey")).toBe(false);
   });
 
+  // The README's own config blocks ship `<your-pageindex-api-key>`, and README's
+  // "Startup validation" section promises the server refuses to start on an unfilled
+  // placeholder. Before this case existed, the angle brackets survived the separator
+  // collapse (`<yourpageindexapikey>` matched neither the literal nor the `${...}`
+  // branch), so the documented placeholder was ACCEPTED and sent to the network, and the
+  // operator got "Could not validate credentials" - a message about a wrong or expired
+  // key - for the single most likely first-run mistake. Read out of README.md rather than
+  // retyped, so the two surfaces stay pinned to each other: changing the README's
+  // placeholder to something this predicate does not catch fails here.
+  it("rejects every PAGEINDEX_API_KEY placeholder the README ships", () => {
+    const readme = readFileSync(fileURLToPath(new URL("../README.md", import.meta.url)), "utf8");
+    const placeholders = [...readme.matchAll(/"PAGEINDEX_API_KEY":\s*"([^"]*)"/g)].map((m) => m[1]);
+    // Guards the guard: a README that stopped showing the env block at all would
+    // otherwise make this vacuously green.
+    expect(placeholders.length).toBeGreaterThan(0);
+    for (const placeholder of placeholders) {
+      expect({ placeholder, usable: isUsableApiKey(placeholder) }).toEqual({ placeholder, usable: false });
+    }
+  });
+
+  it("rejects an angle-bracket-wrapped placeholder", () => {
+    expect(isUsableApiKey("<your-api-key>")).toBe(false);
+  });
+
+  // No real credential is delivered wrapped in angle brackets, so the wrapper itself is
+  // the signal - it catches a placeholder this predicate has never been taught by name.
+  it("rejects an angle-bracket-wrapped value it has no other reason to recognize", () => {
+    expect(isUsableApiKey("<paste-the-key-here>")).toBe(false);
+  });
+
+  it("rejects the your-api-key placeholder carrying the product name in the middle", () => {
+    expect(isUsableApiKey("your-pageindex-api-key")).toBe(false);
+  });
+
   it("accepts a plainly valid key", () => {
     expect(isUsableApiKey("pi-9f2c7a1b4e6d8f0a2c3b5d7e9f1a3b5c")).toBe(true);
+  });
+
+  // Over-breadth guard for the two rules above: a real key is judged on the value as a
+  // whole, so neither the substring "your...api...key" nor a stray angle bracket inside a
+  // key may condemn it. Both values are fabricated.
+  it("still accepts a realistic key that merely contains placeholder-looking text", () => {
+    expect(isUsableApiKey("pi-your-api-key-9f2c7a1b4e6d8f0a2c3b5d7e9f1a3b5c")).toBe(true);
   });
 
   // Verified failure chain: an embedded control character survives `.trim()` (which

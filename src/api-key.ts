@@ -36,14 +36,29 @@ export function isUsableApiKey(raw: string | undefined): boolean {
   // example config).
   if (trimmed.startsWith("${") && trimmed.endsWith("}")) return false;
 
+  // Angle-bracket-wrapped documentation placeholder - the shape README.md's own
+  // `mcpServers` blocks ship ("<your-pageindex-api-key>"). Judged on the WRAPPER, not on
+  // what is inside it, because the wrapper is the reliable part: no real credential is
+  // ever delivered enclosed in angle brackets, while what a doc writer puts between them
+  // is unbounded ("<paste your key here>", "<key>", a translated phrase). Angle brackets
+  // are legal in a header value, so without this the README's own placeholder was sent to
+  // the network and came back as "Could not validate credentials" - a message about a
+  // wrong key, for what is actually an unfilled one, on the most likely first-run
+  // mistake. Only the wrapper is inspected; the value is never echoed anywhere.
+  if (trimmed.startsWith("<") && trimmed.endsWith(">")) return false;
+
   const lower = trimmed.toLowerCase();
 
   // "replace-with..." style placeholder.
   if (lower.startsWith("replace-with")) return false;
 
-  // "your-api-key" style placeholder, any separator (hyphen, underscore, none).
+  // "your-api-key" style placeholder, any separator (hyphen, underscore, none), with an
+  // optional product word between "your" and "api" ("your-pageindex-api-key"). Anchored
+  // at both ends and the infix is letters only, so this recognizes a value that is
+  // NOTHING but the placeholder phrase - a real key that happens to contain those words
+  // ("pi-your-api-key-9f2c...") is still accepted.
   const collapsed = lower.replace(/[-_\s]/g, "");
-  if (collapsed === "yourapikey") return false;
+  if (/^your[a-z]*apikey$/.test(collapsed)) return false;
 
   // A control character (C0 range or DEL) anywhere in the value. This is not a guess at
   // the key's format: no control character can legally occupy an HTTP header value, so a
