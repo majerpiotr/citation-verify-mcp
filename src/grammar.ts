@@ -533,14 +533,36 @@ function namesStandaloneDoc(docStarts: Uint8Array, start: number, end: number): 
 // The one narrow carve-out is the page abbreviation "p." / "pp." immediately before a page
 // NUMBER ("report.pdf p. 5, node_id: 0003" must stay one sentence). It is conditioned on a
 // digit actually following - `p.`/`pp.` NOT followed by a digit (e.g. "report.pdf, p. Then
-// node_id: 0003.") is a real sentence end and must still split. Two branches, so the
-// carve-out can only ever suppress a boundary in the one case it targets, never invent one
-// elsewhere:
+// node_id: 0003.") is a real sentence end and must still split. The branches below are
+// arranged so the carve-out can only ever suppress a boundary in the one case it targets,
+// never invent one elsewhere:
 //   1. `\b[Pp][Pp]?\.` NOT followed by a digit -> IS a boundary in its own right (closes
 //      the gap: a sentence that happens to end in "p."/"pp." with no page number after it).
-//   2. any other `.!?` run not immediately preceded by "p"/"pp" -> the general case.
+//   2. a run of two or more `.!?` that STARTS right after "p"/"pp" -> a boundary: only the
+//      first character of such a run is suppressed by the carve-out, so "report.pdf p.. "
+//      and "p?? " still end a sentence.
+//   3. any other `.!?` run -> the general case.
+//
+// Audit fix (Important): every run branch is anchored at the START of its run by
+// `(?<![.!?])`, and that lookbehind is a cost bound, not a rule. The run branch requires
+// whitespace or end-of-text after the run, so on a run followed by anything else - the dot
+// leaders of a pasted PDF table of contents, "Chapter 1.........12", which is exactly the
+// kind of text this tool is fed - the engine used to backtrack through the whole run at
+// EVERY starting position inside it. Measured: 123 ms at 8k dots, 438 ms at 16k, 1781 ms at
+// 32k, growing 4x per doubling on input a model writes and a host passes straight through.
+// Anchoring makes each run cost one backtrack sweep instead of one per character, and the
+// sweeps are disjoint, so the pass is linear in the text; pinned by the timing test in
+// test/grammar.test.ts.
+//
+// The anchoring is why branch 2 exists at all. The whole matched span used to be allowed to
+// start one character INTO a run when the carve-out lookbehinds rejected its first
+// character; anchored, that escape hatch is gone, so the same case is stated directly as its
+// own branch. sentenceBoundaries reads only `index + length`, so a branch that starts
+// earlier but ends in the same place is the same boundary. Verified equivalent to the
+// unanchored pattern by differential fuzzing over random strings of `.!?pP`, whitespace,
+// digits and letters: identical boundary positions on every one.
 const RE_SENTENCE_BOUNDARY =
-  /\b[Pp][Pp]?\.(?![ \t]*\d)(?:\s+|\s*$)|(?<!\b[Pp])(?<!\b[Pp][Pp])[.!?]+(?:\s+|\s*$)|\n+/g;
+  /\b[Pp][Pp]?\.(?![ \t]*\d)(?:\s+|\s*$)|(?<![.!?])(?:(?<=\b[Pp])|(?<=\b[Pp][Pp]))[.!?]{2,}(?:\s+|\s*$)|(?<![.!?])(?<!\b[Pp])(?<!\b[Pp][Pp])[.!?]+(?:\s+|\s*$)|\n+/g;
 
 // Trailing sentence/bracket punctuation that can follow a node id without being part of
 // it, e.g. "(node_id: 0003)" or "node_id: abc-123.".

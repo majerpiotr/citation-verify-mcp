@@ -1113,6 +1113,22 @@ describe("extractCitations - extraction cost stays bounded on adversarial input 
   );
 
   it(
+    "scans a run of sentence punctuation with no space after it in bounded time",
+    () => {
+      // A fifth quadratic, and the one with the most ordinary trigger: the dot leaders of a
+      // PDF table of contents ("Chapter 1.........12"), pasted into a draft. The sentence
+      // boundary pattern matched a run of .!? and then required whitespace or end-of-text
+      // after it; on a run followed by a NON-space it backtracked through the whole run at
+      // every starting position inside it. Measured before the fix: 123 ms at 8k, 438 ms at
+      // 16k, 1781 ms at 32k - 4x per doubling. None of the tests above builds a run of
+      // sentence punctuation, so none of them reaches it.
+      const build = (k: number) => "Chapter 1" + ".".repeat(k) + "12";
+      expect(expectSubQuadraticScaling(build, 8_000, () => 0)).toBeLessThan(BUDGET_MS);
+    },
+    60_000,
+  );
+
+  it(
     "binds nodes to documents across a draft full of both in bounded time",
     () => {
       // A fourth, and the worst: the node-binding loop was nodes x documents x
