@@ -58,6 +58,19 @@ jobs:
 
       - run: npm run typecheck
 
+      # A production install must not try to run a build it has no toolchain for. This
+      # matrix otherwise only ever runs a FULL `npm ci`, which is exactly why a `prepare`
+      # hook that shells straight out to `tsc` passed CI while breaking every
+      # `npm ci --omit=dev` - the standard deployment and Dockerfile incantation. Run in a
+      # copy so the omitted devDependencies cannot affect the steps above or below.
+      - name: production install must succeed without devDependencies
+        run: |
+          rm -rf /tmp/prod-install
+          mkdir -p /tmp/prod-install
+          cp package.json package-lock.json /tmp/prod-install/
+          cp -r scripts /tmp/prod-install/
+          cd /tmp/prod-install && npm ci --omit=dev
+
       # The unit suite is fully offline. PAGEINDEX_API_KEY is deliberately NOT set and
       # no secret is referenced anywhere in this workflow, so test/integration.test.ts
       # skips itself. The credential-gated suite is not runnable from CI by design.

@@ -39,7 +39,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "dev": "tsx src/index.ts",
-    "prepare": "npm run build"
+    "prepare": "node scripts/prepare.mjs"
   },
   "engines": { "node": ">=20" },
   "dependencies": {

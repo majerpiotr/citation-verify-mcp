@@ -546,11 +546,18 @@ Known and carried deliberately.
 ## Development
 
 ```bash
-npm install                          # once
+npm install                          # once; also builds dist/, via the prepare hook
 npm test                             # full unit suite, offline, no key or network needed
 npx vitest run test/<file>.test.ts   # a single test file
 npm run build                        # tsc -> dist/
 ```
+
+`prepare` is what builds `dist/` on `npm install`, on `npm pack`/`npm publish` and on a
+git-URL install of this repository. It stands aside when the toolchain that would do the
+building is not installed, so a production install (`npm ci --omit=dev`,
+`npm install --omit=dev`) succeeds and simply installs no `dist/` of its own - run
+`npm run build` yourself if you need one there. A build that runs and *fails* still fails
+the install; only the absence of `typescript` is treated as "nothing to do here".
 
 **Running the tests needs a newer Node than running the server does: development requires
 Node.js 20.19.0 or newer**, while the built server itself runs on any Node 20 (measured on

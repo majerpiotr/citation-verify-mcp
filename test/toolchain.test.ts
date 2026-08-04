@@ -23,7 +23,10 @@
 // the version the README tells a contributor to install, and the ordering between the two
 // floors are pinned to each other rather than each stated on its own.
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const read = (relative: string): string =>
@@ -31,7 +34,11 @@ const read = (relative: string): string =>
 
 const ciWorkflow = read("../.github/workflows/ci.yml");
 const readme = read("../README.md");
-const manifest = JSON.parse(read("../package.json")) as { engines: { node: string } };
+const manifest = JSON.parse(read("../package.json")) as {
+  engines: { node: string };
+  scripts: Record<string, string>;
+};
+const prepareScript = fileURLToPath(new URL("../scripts/prepare.mjs", import.meta.url));
 
 function ciMatrixVersions(): string[] {
   const match = /node-version:\s*\[([^\]]*)\]/.exec(ciWorkflow);
@@ -94,5 +101,92 @@ describe("declared Node floors", () => {
     // Inverting them would tell a contributor that a version which cannot run the suite is
     // good enough to develop on.
     expect(compareVersions(readmeDevelopmentFloor(), runtime)).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// The build has to run in three places and must NOT run in a fourth:
+//
+//   - `npm pack` and `npm publish`, or the tarball ships without `dist/` (that is why
+//     `prepublishOnly` was not enough: it does not run on `npm pack`);
+//   - a git-URL install, where npm clones the repo, installs devDependencies and runs
+//     `prepare` - the only hook that fires there;
+//   - a contributor's plain `npm install`;
+//   - NOT on a production install. `npm ci --omit=dev` and `npm install --omit=dev` run
+//     `prepare` too, but deliberately do not install devDependencies, so the build it used
+//     to launch could not work: `sh: tsc: command not found`, npm exits non-zero and the
+//     whole install fails. That is the standard Dockerfile and deployment incantation, and
+//     CI cannot catch it because CI runs a full `npm ci`.
+//
+// `prepare` therefore stays the hook (the first three cases need it) and the DECISION moves
+// into a script, which is what these assertions cover. A config-shape assertion would only
+// restate package.json; these run the real script, in a real directory, and check what it
+// does.
+describe("the prepare hook builds when it can and stands aside when it cannot", () => {
+  function runPrepare(cwd: string, env: NodeJS.ProcessEnv = {}) {
+    return spawnSync(process.execPath, [prepareScript], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, npm_execpath: undefined, ...env },
+    });
+  }
+
+  function scratch(): string {
+    const dir = mkdtempSync(join(tmpdir(), "prepare-guard-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", version: "1.0.0" }));
+    return dir;
+  }
+
+  it("is still wired to the `prepare` lifecycle hook", () => {
+    // Pinned because the three cases above depend on the HOOK, not on the script: moving it
+    // to `prepublishOnly` silently restores a code-free `npm pack` tarball, and moving it to
+    // `prepack` silently breaks the git-URL install.
+    expect(manifest.scripts.prepare).toMatch(/scripts\/prepare\.mjs/);
+  });
+
+  it("exits 0 without building when the local toolchain is absent", () => {
+    const dir = scratch();
+    try {
+      const result = runPrepare(dir);
+      expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: "" });
+      // It must not have shelled out to a build it cannot run - that is the failure this
+      // guard exists for, and an exit code of 0 alone would not prove it.
+      expect(result.stdout).not.toMatch(/tsc|npm run build/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still fails the install when the toolchain IS present and the build fails", () => {
+    // The tempting one-liner for this problem - `... && npm run build || exit 0` - swallows
+    // a real compile error too, and would publish an empty or stale `dist/` with a green
+    // exit code. The script must pass the build's own status through untouched.
+    const dir = scratch();
+    try {
+      mkdirSync(join(dir, "node_modules", "typescript"), { recursive: true });
+      writeFileSync(join(dir, "node_modules", "typescript", "package.json"), "{}");
+      const stub = join(dir, "fake-npm.mjs");
+      writeFileSync(stub, "process.exit(3);\n");
+      const result = runPrepare(dir, { npm_execpath: stub });
+      expect(result.status).toBe(3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs the build when the toolchain is present", () => {
+    const dir = scratch();
+    try {
+      mkdirSync(join(dir, "node_modules", "typescript"), { recursive: true });
+      writeFileSync(join(dir, "node_modules", "typescript", "package.json"), "{}");
+      const stub = join(dir, "fake-npm.mjs");
+      writeFileSync(stub, "console.log(process.argv.slice(2).join(\" \"));\n");
+      const result = runPrepare(dir, { npm_execpath: stub });
+      expect({ status: result.status, stdout: result.stdout.trim() }).toEqual({
+        status: 0,
+        stdout: "run build",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
