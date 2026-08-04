@@ -1490,6 +1490,67 @@ describe("extractCitations - a page phrase that names its own document does not 
     ]);
   });
 
+  // --- re-review (Critical 2): the first version of this guard matched one spelling of the
+  // owner - `[ \t]+(of|in)[ \t]+` immediately followed by a bare or double-quote/backtick
+  // name - so every ORDINARY decoration of the same sentence still bound the page to the
+  // document on the LEFT, which is the exact harm this whole block exists to prevent. Each
+  // row below was measured binding wrongly before the rule was rewritten structurally.
+  it("does not bind a page whose owner carries a definite article", () => {
+    expect(extractCitations("methods.pdf, see page 12 of the results.pdf.")).toEqual(bothPlain);
+  });
+
+  it("does not bind a page whose owner is on the next line", () => {
+    expect(extractCitations("methods.pdf, see page 12 of\nresults.pdf.")).toEqual(bothPlain);
+  });
+
+  it("does not bind a page whose owner follows a preposition outside the old closed list", () => {
+    expect(extractCitations("methods.pdf, page 12 from results.pdf.")).toEqual(bothPlain);
+    expect(extractCitations("methods.pdf, page 12 within results.pdf.")).toEqual(bothPlain);
+    expect(extractCitations("methods.pdf, page 12 cited by results.pdf.")).toEqual(bothPlain);
+  });
+
+  it("does not bind a page whose owner is single-quoted", () => {
+    // The sharpest case: docs/citation-grammar.md states that `'report.pdf'` IS recognized
+    // and checked (single quotes are an ordinary boundary, they simply do no work), so a
+    // guard blind to them made the grammar disagree with itself about one string.
+    expect(extractCitations("methods.pdf, page 12 of 'results.pdf'.")).toEqual(bothPlain);
+  });
+
+  it("does not bind a page whose owner is parenthesised, bracketed, angled or emphasised", () => {
+    expect(extractCitations("methods.pdf, page 12 of (results.pdf).")).toEqual(bothPlain);
+    expect(extractCitations("methods.pdf, page 12 of [results.pdf].")).toEqual(bothPlain);
+    expect(extractCitations("methods.pdf, page 12 of <results.pdf>.")).toEqual(bothPlain);
+    expect(extractCitations("methods.pdf, page 12 of **results.pdf**.")).toEqual(bothPlain);
+  });
+
+  it("does not bind a page whose owner is separated by a non-breaking space", () => {
+    expect(extractCitations("methods.pdf, page 12 of results.pdf.")).toEqual(bothPlain);
+  });
+
+  it("does not bind a page whose range separator was not recognized", () => {
+    // A compound of two disclosed behaviours: an em dash is not a range separator, so the
+    // page match ends at "5" and the owner probe used to start on the far side of the range
+    // it never consumed. The truncated page must not bind to the left either.
+    expect(extractCitations("methods.pdf, pages 5—7 of results.pdf.")).toEqual(bothPlain);
+  });
+
+  it("applies every one of those to a quoted document name too", () => {
+    expect(extractCitations('"Annual Report.pdf", page 12 of \'results.pdf\'.')).toEqual([
+      { token: "Annual Report.pdf", docName: "Annual Report.pdf", pages: null, nodeId: null },
+      { token: "results.pdf", docName: "results.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("does not bind a page whose owner is a URL this tool cannot verify", () => {
+    // The owner is named, just not in a form the corpus can be asked about: the URL's own
+    // path segment is deliberately invisible (see the URL rule). Binding the page left would
+    // still be a false `unresolved` on the document to the left, with nothing extracted that
+    // could compensate, so the page is dropped here too.
+    expect(extractCitations("methods.pdf, page 12 of https://example.com/results.pdf.")).toEqual([
+      { token: "methods.pdf", docName: "methods.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
   // --- the regression fence: everything below already behaved correctly and must keep
   // behaving correctly. "of" followed by anything that is not a document name is ordinary
   // prose about the SAME document, and binding it there is the whole point of the feature.
@@ -1528,6 +1589,47 @@ describe("extractCitations - a page phrase that names its own document does not 
   it("still reports a page-led citation to a single document with no page", () => {
     expect(extractCitations("See page 12 of results.pdf.")).toEqual([
       { token: "results.pdf", docName: "results.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  // --- the second half of the fence, added with the structural rewrite above: a following
+  // document does NOT make the page ambiguous when the two are plainly separate items. A
+  // rule that dropped the page here would cost every citation in an ordinary list or
+  // coordinated sentence its page check - a silence rather than a corruption, but a large
+  // one, and these are the commonest shapes an agent writes.
+  const twoPaged = [
+    { token: "methods.pdf#p3", docName: "methods.pdf", pages: { from: 3, to: 3 }, nodeId: null },
+    { token: "results.pdf#p7", docName: "results.pdf", pages: { from: 7, to: 7 }, nodeId: null },
+  ];
+
+  it("still binds both pages when the documents are coordinated by 'and'", () => {
+    expect(extractCitations("See methods.pdf p.3 and results.pdf p.7.")).toEqual(twoPaged);
+  });
+
+  it("still binds both pages when the documents are coordinated by 'or'", () => {
+    expect(extractCitations("See methods.pdf p.3 or results.pdf p.7.")).toEqual(twoPaged);
+  });
+
+  it("still binds both pages across a comma-separated list", () => {
+    expect(extractCitations("Sources: methods.pdf p.3, results.pdf p.7.")).toEqual(twoPaged);
+  });
+
+  it("still binds both pages in a bulleted list", () => {
+    expect(extractCitations("- methods.pdf p.3\n- results.pdf p.7\n")).toEqual(twoPaged);
+  });
+
+  it("still binds both pages in a numbered list", () => {
+    expect(extractCitations("1. methods.pdf p.3\n2. results.pdf p.7\n")).toEqual(twoPaged);
+  });
+
+  it("still binds both pages when each document opens its own line", () => {
+    expect(extractCitations("methods.pdf p.3\nresults.pdf p.7\n")).toEqual(twoPaged);
+  });
+
+  it("still binds a page when the next sentence names another document", () => {
+    expect(extractCitations("methods.pdf page 5. results.pdf page 9.")).toEqual([
+      { token: "methods.pdf#p5", docName: "methods.pdf", pages: { from: 5, to: 5 }, nodeId: null },
+      { token: "results.pdf#p9", docName: "results.pdf", pages: { from: 9, to: 9 }, nodeId: null },
     ]);
   });
 });

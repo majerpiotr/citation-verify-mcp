@@ -310,18 +310,38 @@ describe("createServer verify_citations tool", () => {
     // page 12 of results.pdf"), where that clause never looked. The second half is pinned
     // with the first so the guarantee cannot be read as broader than the code delivers.
     expect(description).toMatch(
-      /on the SAME LINE, with no other document name in between and none named by the page phrase itself/i,
+      /on the SAME LINE, with no other document name in between and none named by the page phrase itself in the form described below/i,
     );
     // --- audit fix (Critical): a page phrase naming its own document binds to NEITHER.
-    // Pinned as one conjunction - the trigger (`of`/`in` plus a name), the worked example,
-    // the "binds to NEITHER" verdict, and the "rather than the document on its left"
-    // correction - because the rule without the correction reads as a mere omission, when
-    // what it actually prevents is a page bound to the wrong document (a false `unresolved`
-    // carrying a non-null `title`, i.e. the fix-do-not-delete signal, on a citation that was
-    // correct). The recovery instruction is pinned too: a dropped page is silent, and a
-    // silence is only recoverable if the reader is told how.
+    // Pinned as one conjunction - the trigger, the worked example, the "binds to NEITHER"
+    // verdict, and the "rather than the document on its left" correction - because the rule
+    // without the correction reads as a mere omission, when what it actually prevents is a
+    // page bound to the wrong document (a false `unresolved` carrying a non-null `title`,
+    // i.e. the fix-do-not-delete signal, on a citation that was correct). The recovery
+    // instruction is pinned too: a dropped page is silent, and a silence is only recoverable
+    // if the reader is told how.
+    //
+    // Re-review (Critical 2): the trigger is no longer "`of` or `in` plus a name" - that
+    // enumeration was the defect, since every other spelling of the same sentence bound the
+    // page to the WRONG document. The assertion moved with the claim rather than being
+    // deleted: it now pins the structural trigger (ANY following name, at most three
+    // connecting words, decorations skipped).
     expect(description).toMatch(
-      /A page phrase that names its OWN document - `of` or `in` plus a `<name>\.pdf`, as in `methods\.pdf, page 12 of results\.pdf` - binds to NEITHER document: the page is dropped and both are checked without it, rather than the page being bound to the document on its left\. Write the page against the name it belongs to \(`results\.pdf p\.12`\) to have it verified\./,
+      /A page phrase that names its OWN document - ANY `<name>\.pdf` following the page, separated from it by at most three connecting words and by any amount of whitespace, quotes, brackets, emphasis marks or dashes, as in `methods\.pdf, page 12 of results\.pdf`, `page 12 of the results\.pdf` or `page 12 of 'results\.pdf'` - binds to NEITHER document: the page is dropped and both are checked without it, rather than the page being bound to the document on its left\. Write the page against the name it belongs to \(`results\.pdf p\.12`\) to have it verified\./,
+    );
+    // The residue is pinned WITH the rule, in the same block, because a guarantee published
+    // without its exceptions is what made the previous version of this clause dangerous: the
+    // model reads it as an affirmative guard and stops checking. Each named exception is a
+    // shape where the page still binds LEFT, so each is a place a correct citation can come
+    // back `unresolved` with a non-null `title`.
+    expect(description).toMatch(
+      /The page still binds LEFT - correct for a list, WRONG for an owner - when the two are separated by `and` or `or`, by any punctuation \(`,` `;` `:` `\.`\), by a line break BEFORE the connecting words, or by a fourth connecting word/,
+    );
+    expect(description).toMatch(
+      /`methods\.pdf p\.3 and results\.pdf p\.7` keeps both pages, while `methods\.pdf, page 12 of the second half of results\.pdf` still binds page 12 to `methods\.pdf`\./,
+    );
+    expect(description).toMatch(
+      /So does an owner the grammar cannot see as a document at all \(`__results\.pdf__`, `sub\/results\.pdf`\)\./,
     );
 
     // --- final-fix Fix 1: node binding is NOT governed by the page separator rule above -
@@ -662,6 +682,34 @@ describe("the prose documentation states the load-bearing claims the tool descri
     expect(grammarDoc).toMatch(
       /A page phrase that names its own document binds to neither[\s\S]{0,600}the page is \*\*dropped\*\*/i,
     );
+  });
+
+  it("discloses in both files where a page still binds to the document on its left", () => {
+    // Re-review (Critical 2). The rule above is not absolute, and the previous round shipped
+    // it as though it were - the tool description offered the model an affirmative guard that
+    // held for one spelling of the sentence. These are the shapes where the page still binds
+    // LEFT and can therefore report a correct citation `unresolved` with a non-null `title`.
+    // Substance only, in whatever words each file uses: the trigger (`and`/`or`, punctuation,
+    // a line break before the connecting words, a fourth word) and the consequence.
+    expect(readme).toMatch(
+      /page can still bind to the document on its left[\s\S]{0,600}fourth (connecting )?word/i,
+    );
+    expect(readme).toMatch(/`and`\/`or`|`and`, `or`|`and` or `or`/);
+    expect(grammarDoc).toMatch(
+      /still bind[\s\S]{0,200}page 12 to `methods\.pdf`[\s\S]{0,400}fourth connecting word/i,
+    );
+    // And the mirror: a page dropped where binding would have been correct, which is the
+    // price this rule pays for erring towards silence.
+    expect(readme).toMatch(/drops the page in genuinely ambiguous cases/i);
+    expect(grammarDoc).toMatch(/drops a page that would have bound correctly/i);
+  });
+
+  it("states in the grammar reference that the owner rule is structural, not a preposition list", () => {
+    // The enumeration is what failed twice. If a future change reverts to a closed list of
+    // prepositions, this document must not keep claiming otherwise - and the claim is the
+    // only place a reader can learn that `from`, `within` and `of the` are covered.
+    expect(grammarDoc).toMatch(/structural rather than a list of prepositions/i);
+    expect(grammarDoc).toMatch(/at most three\*{0,2} connecting words/i);
   });
 
   it("discloses in both files that a citation glued to a URL by a sub-delimiter is dropped in every status", () => {

@@ -408,9 +408,14 @@ The grammar is fixed, not learned, and deliberately narrow. In summary:
 - **A page is optional**, and must follow its document on the same line, introduced by `p.`,
   `pp.`, `page` or `pages`: `report.pdf p.3`, `report.pdf (pages 5 to 7)`. A page on a
   different line, or phrased in words ("page five"), is not read. **A page phrase that names
-  its own document** - `of` or `in` followed by a `.pdf` name, as in `methods.pdf, page 12 of
-  results.pdf` - binds to neither: the page is dropped and both documents are checked without
-  it, rather than the page being bound to the wrong document.
+  its own document** - any `.pdf` name following the page, separated from it by at most three
+  connecting words and any amount of whitespace, quotes, brackets, emphasis marks or dashes,
+  as in `methods.pdf, page 12 of results.pdf` or `page 12 of the 'results.pdf'` - binds to
+  neither: the page is dropped and both documents are checked without it, rather than the
+  page being bound to the wrong document. `and`, `or`, punctuation, a line break before the
+  connecting words, or a fourth word ends the phrase, and the page binds to the document on
+  its left again - which is what keeps `methods.pdf p.3 and results.pdf p.7` and a list with
+  one citation per line binding each page correctly.
 - **A node is optional**: `node_id: 0007` or `node_id=0007` binds to the nearest document
   mentioned in the same sentence, in either order. A document cited with both a page and a
   node produces one combined citation, not two.
@@ -499,7 +504,18 @@ Known and carried deliberately.
   document to its left is not its owner and binding it there would report a real document as
   `unresolved` on a page it never had. The two documents are still checked; the page claim is
   not. Cite the page directly after the name it belongs to (`results.pdf p.12`) to have it
-  verified.
+  verified. The same rule drops the page in genuinely ambiguous cases it cannot tell apart
+  from an owner (`methods.pdf p.3 -> results.pdf p.7`, `methods.pdf p.3 (see results.pdf)`) -
+  a silence, and the safe half of the trade.
+- **A page can still bind to the document on its left when the owner phrase runs past what
+  that rule reads.** It reads at most three connecting words, and stops at a fourth
+  connecting word, at `and`/`or`, at any punctuation, and at a line break before those words -
+  so `methods.pdf, page 12 of the
+  second half of results.pdf`, `methods.pdf, page 12, of results.pdf` and an owner the
+  grammar cannot see as a document at all (`__results.pdf__`, `sub/results.pdf`) still bind
+  page 12 to `methods.pdf`, which can report it `unresolved` with a non-null `title` on a
+  citation that was correct. Keep a page and the name it belongs to adjacent
+  (`results.pdf p.12`) and the question never arises.
 - **`unchecked` where a check was possible:** `[node:report.pdf]` and `node_id:report.pdf`
   written with no space after the colon report an `unchecked` node id instead of checking the
   document. Safe (an `unchecked` citation is never deleted) but not what the author meant.

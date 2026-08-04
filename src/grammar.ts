@@ -391,28 +391,96 @@ const DOC_PAGE_SEP = String.raw`(?:[,;]?[ \t]*(?:${CONNECTOR_WORD}[ \t]+)?|[ \t]
 // always dropped the page, and this makes "," and ";" agree with "and" instead of
 // disagreeing with it.
 //
-// The preposition list is CLOSED, for the same reason the connector list is: "of" and "in"
-// are the two forms that name a container, and requiring an actual document name after them
-// is what keeps the ordinary "page 3 of 40" and "page 12 of the appendix" binding as before.
-// A quoted owner is matched structurally only (no isFileNameShaped check): the guard's job
-// is to withhold a binding, so admitting a slightly wider set of owners errs towards the
-// silence this whole rule prefers.
-const PAGE_OWNER_PREPOSITION = String.raw`(?:${ci("of")}|${ci("in")})`;
-const QUOTED_DOC_AHEAD = QUOTE_DELIMITERS.map(
-  (delim) => `${delim}[^${delim}]*[${NAME_CHARS}]\\.${PDF_EXT}${delim}`,
-).join("|");
-// Sticky, never global: it is asked "does an owner start exactly here?" at the end of a page
-// match, so it must not be allowed to go looking further down the text. Cost is bounded by
-// the length of the name run it lands on, and the runs it scans are disjoint from one
-// another, so applying it once per page match stays linear in the text.
-const RE_PAGE_OWNER_FOLLOWS = new RegExp(
-  String.raw`[ \t]+${PAGE_OWNER_PREPOSITION}[ \t]+(?:${DOC_NAME_PATTERN}|${QUOTED_DOC_AHEAD})`,
-  "yu",
-);
+// Re-review fix (Critical 2): the first version of this guard was a REGEX enumerating one
+// spelling of the owner - `[ \t]+(of|in)[ \t]+` immediately followed by a bare or
+// double-quote/backtick-quoted name. Every other ordinary rendering of the same sentence
+// slipped past it and bound the page to the document on the LEFT again: "page 12 of THE
+// results.pdf", "page 12 from results.pdf", an owner on the next line, a non-breaking space,
+// `'results.pdf'`, `(results.pdf)`, `[results.pdf]`, `<results.pdf>`, `**results.pdf**`, and
+// a range whose separator was not recognized ("pages 5-7" written with an em dash, where the
+// page match ends before the owner phrase even begins). The single-quote case had the
+// grammar disagreeing with itself: docs/citation-grammar.md states that `'report.pdf'` IS
+// recognized and checked, because a single quote is an ordinary boundary character.
+//
+// Enumerating prepositions and quote styles is what failed twice, so this is now STRUCTURAL
+// and decides from the bare pass's own verdict rather than re-deriving one. `docStarts`
+// marks the start of every document the bare pass accepted, so "is a document named just
+// after this page phrase" is a mask lookup - the same technique namesStandaloneDoc uses, and
+// for the same reason: two implementations of "is this a document name" is how the last
+// version came to disagree with the rest of the file.
+//
+// The probe walks forward from the end of the page match and answers "is this page phrase
+// plausibly followed by the name of the document it belongs to". It steps over:
+//   - whitespace of every kind, U+00A0 and a line break included;
+//   - DECORATION: brackets and quotation marks of every script (Ps/Pe/Pi/Pf), every dash
+//     (Pd - which is also what carries an unrecognized range separator past the probe),
+//     `"`, `'`, a backtick, and the emphasis and angle marks `*`, `~`, `<` and `>`;
+//   - at most MAX_CONNECTING_WORDS connecting words.
+// It answers YES on reaching a document start, and NO on anything else - a digit-and-letter
+// word budget exceeded, or any character that is neither decoration nor a word: `,` `;` `.`
+// `:` `!` `?` all end the probe, which is what keeps "page 3 of 40.", "page 12 of the
+// appendix." and a comma-separated source list binding exactly as before.
+//
+// Three deliberate refusals, each protecting a shape where binding LEFT is correct:
+//   - `and` and `or` end the probe. They coordinate two separate items ("methods.pdf p.3 and
+//     results.pdf p.7"), where the page really does belong to the document on the left.
+//     Note the direction of this list versus the one it replaces: an unforeseen word now
+//     makes the probe DROP the page (a silence, recoverable by rewriting), where an
+//     unforeseen preposition used to make it BIND the page to the wrong document (a false
+//     `unresolved` carrying a non-null `title`, i.e. deleted or corrupted correct work).
+//     That is the same allowlist-direction argument the boundary rule is built on, applied
+//     to the failure that matters here.
+//   - a line break before the first connecting word ends the probe, so the connecting phrase
+//     must BEGIN on the page's own line. This is what keeps a bulleted or numbered list of
+//     citations - the commonest shape an agent writes - from losing every page it states,
+//     while still following an owner phrase that merely wraps ("page 12 of\nresults.pdf").
+//   - a word budget of MAX_CONNECTING_WORDS, so an owner named far away down a sentence
+//     ("...page 3 gives the model used to build results.pdf") still binds left.
+// Each refusal is a place where the page can still bind to the wrong document; they are
+// disclosed on all three user-facing surfaces rather than left implicit.
+//
+// A `://` reached by the probe answers YES: the page phrase does name its owner, in a form
+// this tool deliberately cannot look up (a URL's own path segment is invisible in every
+// status), and binding the page left there would be the same false `unresolved` with nothing
+// extracted that could compensate for it.
+const MAX_CONNECTING_WORDS = 3;
+const NON_OWNER_CONNECTORS = new Set(["and", "or"]);
+const RE_CONNECTING_WORD_CHAR = /[\p{L}\p{M}\p{N}_]/u;
+const RE_OWNER_DECORATION = /[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Pd}"'`*<>~]/u;
+const RE_OWNER_SPACE = /\s/u;
+const LINE_BREAKS = new Set(["\n", "\r", "\u2028", "\u2029"]);
 
-function pageOwnerFollows(text: string, matchEnd: number): boolean {
-  RE_PAGE_OWNER_FOLLOWS.lastIndex = matchEnd;
-  return RE_PAGE_OWNER_FOLLOWS.test(text);
+function pageOwnerFollows(text: string, docStarts: Uint8Array, matchEnd: number): boolean {
+  let i = matchEnd;
+  let words = 0;
+  while (i < text.length) {
+    if (docStarts[i] === 1) return true;
+    const ch = text[i];
+    if (LINE_BREAKS.has(ch)) {
+      if (words === 0) return false; // the owner phrase must start on the page's own line
+      i++;
+      continue;
+    }
+    if (RE_OWNER_SPACE.test(ch) || RE_OWNER_DECORATION.test(ch)) {
+      i++;
+      continue;
+    }
+    if (RE_CONNECTING_WORD_CHAR.test(ch)) {
+      if (words === MAX_CONNECTING_WORDS) return false;
+      let end = i;
+      // A document match always starts at a boundary character, and no word character is
+      // one, so no document can start inside this run - it is safe to consume whole.
+      while (end < text.length && RE_CONNECTING_WORD_CHAR.test(text[end])) end++;
+      if (NON_OWNER_CONNECTORS.has(text.slice(i, end).toLowerCase())) return false;
+      words++;
+      i = end;
+      continue;
+    }
+    // An owner this tool cannot look up is still an owner (see above); anything else ends
+    // the phrase and the page binds to the document on the left, as it always did.
+    return text.startsWith("://", i);
+  }
+  return false;
 }
 
 // A document followed by a page marker on the SAME LINE, separated by DOC_PAGE_SEP above -
@@ -822,9 +890,8 @@ export function extractCitations(text: string): Citation[] {
     const from = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 2);
     if (name === undefined || from === undefined || !isFileNameShaped(name)) continue;
     // The page names its own document, which is not this one: drop the page (the quoted
-    // name is still extracted by the pass below, just without it). See
-    // PAGE_OWNER_PREPOSITION.
-    if (pageOwnerFollows(text, start + m[0].length)) continue;
+    // name is still extracted by the pass below, just without it). See pageOwnerFollows.
+    if (pageOwnerFollows(text, docStarts, start + m[0].length)) continue;
     const to = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 3);
     quotedPageByStart.set(start, { from: Number(from), to: to !== undefined ? Number(to) : Number(from) });
   }
@@ -860,7 +927,7 @@ export function extractCitations(text: string): Citation[] {
     const start = m.index ?? 0;
     // Same rule as the quoted pass above: a page phrase that names its OWN document binds to
     // neither, so the document here is emitted with no page rather than with the wrong one.
-    if (pageOwnerFollows(text, start + m[0].length)) continue;
+    if (pageOwnerFollows(text, docStarts, start + m[0].length)) continue;
     const from = Number(m[2]);
     const to = m[3] !== undefined ? Number(m[3]) : from;
     pageByStart.set(start, { from, to });

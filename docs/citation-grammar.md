@@ -138,11 +138,54 @@ between them but a recognized separator:
 
 ### A page phrase that names its own document binds to neither
 
-`of` or `in` followed by a document name states whose page it is, and that owner is not the
-name to its left. In `methods.pdf, see page 12 of results.pdf`, the page is **dropped**: both
-documents are extracted and checked, neither carries a page. The preposition list is closed
-(`of`, `in`), and an actual `<name>.pdf` - bare or quoted - must follow it, so the ordinary
-`report.pdf, page 3 of 40` and `report.pdf, page 12 of the appendix` still bind as before.
+A document name following a page states whose page it is, and that owner is not the name to
+its left. In `methods.pdf, see page 12 of results.pdf`, the page is **dropped**: both
+documents are extracted and checked, neither carries a page.
+
+The rule is structural rather than a list of prepositions, and it asks the ordinary document
+scan - not a second, private idea of what a name looks like - whether a name follows. Reading
+forward from the end of the page marker it steps over:
+
+- whitespace of every kind, `U+00A0` and a line break included;
+- brackets and quotation marks of every script, every dash character, and `"` `'` `` ` `` `*`
+  `<` `>` `~` - so `'results.pdf'`, `(results.pdf)`, `[results.pdf]`, `<results.pdf>`,
+  `**results.pdf**`, `« »`, `「 」` and `"Annual Report.pdf"` are all recognized as the owner;
+- **at most three** connecting words, of any language (`of`, `in`, `from`, `within`,
+  `of the`, `as printed in`, ...).
+
+and stops at anything else. So `report.pdf, page 3 of 40` and `report.pdf, page 12 of the
+appendix` still bind as before - the run ends at the `.` with no document found.
+
+Four things end the phrase and leave the page bound to the document on its **left**. The
+first two are why the rule reads this way at all; the last two are its residue.
+
+- **`and` or `or`.** They coordinate two separate items, so in `methods.pdf p.3 and
+  results.pdf p.7` the page really does belong to the name on the left. Note the direction of
+  this closed list against the one it replaced: an unforeseen word now makes the page
+  **drop** (a silence), where an unforeseen preposition used to make it **bind** to the wrong
+  document. It is the same allowlist reasoning the boundary rule is built on.
+- **A line break before the connecting words**, i.e. the phrase must begin on the page's own
+  line. A list with one citation per line (`- methods.pdf p.3`, `- results.pdf p.7`) therefore
+  keeps every page it states, while an owner phrase that merely wraps (`page 12
+  of\nresults.pdf`) is still read.
+- **Any other punctuation**, `,` `;` `:` `.` `/` `|` included. `methods.pdf, page 12, of
+  results.pdf` and `methods.pdf, page 12: results.pdf` still bind page 12 to `methods.pdf`.
+- **A fourth connecting word.** `methods.pdf, page 12 of the second half of results.pdf`
+  still binds page 12 to `methods.pdf`.
+
+A name the grammar cannot see as a document at all is not an owner either, for the same
+reason it is not a citation: `methods.pdf, page 12 of __results.pdf__` and
+`... of sub/results.pdf` bind page 12 to `methods.pdf`, because the trailing `_` and the `/`
+make those names non-standalone tokens (see
+[A bare name must stand as its own token](#a-bare-name-must-stand-as-its-own-token)). A URL
+*is* honoured as an owner even though its path segment is never extracted: `page 12 of
+https://example.com/results.pdf` drops the page rather than binding it left.
+
+The rule errs towards dropping, and the cases where it drops a page that would have bound
+correctly are the price: `methods.pdf p.3 -> results.pdf p.7` and `methods.pdf p.3 (see
+results.pdf)` lose the page, because a dash and a bracket are exactly what an owner phrase is
+allowed to contain. A dropped page is a silence and is recoverable by writing the page against
+its own name; a page bound to the wrong document is not.
 
 Dropping is deliberate, and it is the same choice made everywhere else in this grammar.
 Binding the page to the document on the left is the worst outcome available: a `methods.pdf`
@@ -288,8 +331,8 @@ makes a real space-bearing file name checkable at all.
 - A page phrased as words ("page five"), a Roman numeral, or without one of the four page
   keywords.
 - A page marker separated from its document by more prose than the closed connector list
-  allows, or on a different line, or naming its own document with `of`/`in` (dropped rather
-  than bound to the preceding name).
+  allows, or on a different line, or naming its own document (dropped rather than bound to
+  the preceding name).
 - A page range joined by an em dash character, the word "through", or anything other than a
   hyphen, en dash or "to" - truncated to its first page rather than dropped.
 - A document name with spaces, unquoted, or quoted but failing the file-name shape check -
@@ -326,6 +369,14 @@ Both directions are known, measured and carried deliberately. Neither is a bug r
 - A quoted or backtick-delimited span of up to 4 words ending in `.pdf` is read as a document
   name even inside inline code, so `` `cat report.pdf` `` in a draft can report `unresolved`
   for a file nobody ever cited.
+- A page can still bind to the document on its **left** when its real owner is named beyond
+  what the owner rule reads: past a fourth connecting word, past punctuation, past a line
+  break that comes before the connecting words, or written so that the grammar cannot see it
+  as a document at all (`__results.pdf__`, `sub/results.pdf`). This is the one over-reach that
+  can produce a false `unresolved` carrying a **non-null `title`** on a correct citation, the
+  signal that means "the document is real, fix the page". Keeping a page adjacent to the name
+  it belongs to (`results.pdf p.12`) avoids it entirely; see
+  [A page phrase that names its own document binds to neither](#a-page-phrase-that-names-its-own-document-binds-to-neither).
 
 ### Under-reach: a real citation not reported at all
 
@@ -353,7 +404,10 @@ Both directions are known, measured and carried deliberately. Neither is a bug r
   the page claim goes unverified.
 - A page phrase that names its own document (`page 12 of results.pdf`) is dropped rather than
   bound, so both documents are checked and the page claim goes unverified. That is the safe
-  half of a trade whose other half was a false `unresolved` on the document to its left.
+  half of a trade whose other half was a false `unresolved` on the document to its left. The
+  same rule drops a page that would have bound correctly whenever a second document follows
+  it separated only by dashes, brackets or up to three words (`methods.pdf p.3 ->
+  results.pdf p.7`, `methods.pdf p.3 (see results.pdf)`).
 
 The connector-word list (`on`, `at`, `see`), the quoted-name shape limits and the bracket-tag
 keyword acceptance are fixed choices made without corpus evidence of what real agents write.
