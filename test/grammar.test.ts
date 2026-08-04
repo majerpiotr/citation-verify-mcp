@@ -1129,6 +1129,32 @@ describe("extractCitations - extraction cost stays bounded on adversarial input 
   );
 
   it(
+    "scans one unclosed bracket tag followed by a long run of horizontal whitespace in bounded time",
+    () => {
+      // A SEVENTH quadratic, and the one the test above provably cannot reach. Bounding the
+      // value class left a second unbounded quantifier in the same pattern: the `[ \t]*`
+      // between the colon and the capture group matches space and tab, and so did the value
+      // class, so the two OVERLAPPED. On an UNCLOSED tag the engine gave back one whitespace
+      // character at a time and re-scanned the whole remaining value looking for a `]` that
+      // cannot be there - once per give-back position. Measured before the fix, through
+      // extractCitations: 35 ms at 8k, 139 ms at 16k, 578 ms at 32k, 2309 ms at 64k, 8796 ms
+      // at 128k - 4x per doubling. Tabs behave identically (36/144/574/2230/8837 ms), and the
+      // same length with the tag CLOSED costs 1.3 ms, a ~7000x amplification.
+      //
+      // The test above builds `"[word: ".repeat(k)`, which gives every tag exactly ONE space,
+      // so `[ \t]*` has two backtrack positions and the shape can never reach this. A timing
+      // guard built in the shape of the bug it is meant to catch is not a guard: this one
+      // therefore builds a whitespace RUN, which is the actual trigger, and asserts it for
+      // both characters the class admits.
+      const spaces = (k: number) => `[node: ${" ".repeat(k)}x`;
+      const tabs = (k: number) => `[node: ${"\t".repeat(k)}x`;
+      expect(expectSubQuadraticScaling(spaces, 8_000, () => 0)).toBeLessThan(BUDGET_MS);
+      expect(expectSubQuadraticScaling(tabs, 8_000, () => 0)).toBeLessThan(BUDGET_MS);
+    },
+    60_000,
+  );
+
+  it(
     "scans a run of sentence punctuation with no space after it in bounded time",
     () => {
       // A fifth quadratic, and the one with the most ordinary trigger: the dot leaders of a

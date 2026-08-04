@@ -502,7 +502,26 @@ const RE_NODE_ID = new RegExp(String.raw`${NODE_ID_KEYWORD}[:=]\s*([^${NAME_BOUN
 // `unresolved` - and it costs no real citation its check: the document scan reads the whole
 // text regardless of brackets, so a `<name>.pdf` written inside such a tag is still
 // extracted exactly as it would be in prose.
-const RE_BRACKET_TAG = /\[[A-Za-z]+[ \t]*:[ \t]*([^[\]\n]+)\]/gd;
+//
+// Re-review fix (Critical 1): bounding the VALUE class was only half the cost fix, and the
+// comment above used to claim the whole of it. The `[ \t]*` between the colon and the value
+// is a second unbounded quantifier, and its character set OVERLAPPED the value class - both
+// matched space and tab - so on an UNCLOSED tag the engine gave back one whitespace
+// character at a time and re-scanned the entire remaining value looking for a "]" that
+// cannot be there. Measured through extractCitations on "[node: " + " "*k + "x": 36 ms at
+// 8k, 143 ms at 16k, 563 ms at 32k, 2215 ms at 64k, 8880 ms at 128k - still 4x per
+// doubling, with tabs identical and the same length CLOSED costing 1.4 ms.
+//
+// Forbidding the value's FIRST character from being horizontal whitespace removes the
+// overlap: after the greedy `[ \t]*` gives back one position the value's first character
+// class immediately fails on the whitespace it handed back, so each give-back costs O(1)
+// instead of re-scanning the tail. Reported output is unchanged - extractCitations trims the
+// value before using it, so a leading space was never part of any id - and the reserved span
+// merely no longer covers leading whitespace, which no document match can start inside.
+// Verified by differential fuzzing against the previous pattern (see the report) and pinned
+// by a timing test built on a whitespace RUN; the pre-existing bracket-tag timing test uses
+// one space per tag and provably cannot reach this shape.
+const RE_BRACKET_TAG = /\[[A-Za-z]+[ \t]*:[ \t]*([^[\]\n \t][^[\]\n]*)\]/gd;
 
 // True when an identifier's own span - a bracket tag's value, or a node_id: id - contains a
 // document name that the bare pass has ALREADY accepted as a standalone token of the
