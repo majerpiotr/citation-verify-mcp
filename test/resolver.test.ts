@@ -6,7 +6,7 @@
 // the fake are asserted explicitly wherever the per-call dedup rule applies - the dedup is
 // otherwise invisible from outcomes alone.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { verifyCitations } from "../src/resolver.js";
+import { verifyCitations, MAX_DISTINCT_DOCUMENTS, DOC_CAP_SUGGESTION } from "../src/resolver.js";
 import type { DocLookup, DocLookupResult } from "../src/pageindex-client.js";
 
 // An `Error` value means "throw exactly this", so a test can pin what does (and does not)
@@ -661,5 +661,91 @@ describe("verifyCitations - an aborted request stops instead of finishing the sw
       total: 1,
       resolved: 1,
     });
+  });
+});
+
+// Review finding (P2): nothing bounded how many distinct documents one call would look up.
+// 82 KiB of ordinary text names 5000 of them, and lookups are sequential with each request
+// bounded only by the SDK's 60-second default, so one ordinary-looking call could occupy the
+// server for days. The AbortSignal above stops a call the host gave up on; this cap stops the
+// call from being unreasonable in the first place, including when no host is watching.
+//
+// The cap must NEVER produce `unresolved` - a citation past it was not checked, and reporting
+// a miss would make a consuming agent delete work on the strength of a budget decision
+// (CLAUDE.md hard rule 4).
+describe("verifyCitations - the number of distinct documents per call is capped", () => {
+  const manyDocs = (count: number): string =>
+    Array.from({ length: count }, (_, i) => `See doc${i}.pdf.`).join(" ");
+
+  const alwaysFound: DocLookup = {
+    async getDocument(docName) {
+      return { found: true, doc: { name: docName, pageCount: 10 } };
+    },
+    async getNodeIds() {
+      return new Set<string>();
+    },
+  };
+
+  function countingClient(): { client: DocLookup; calls: string[] } {
+    const calls: string[] = [];
+    return {
+      calls,
+      client: {
+        async getDocument(docName) {
+          calls.push(docName);
+          return alwaysFound.getDocument(docName);
+        },
+        async getNodeIds(docName) {
+          return alwaysFound.getNodeIds(docName);
+        },
+      },
+    };
+  }
+
+  it("looks up no more distinct documents than the cap allows", async () => {
+    const { client, calls } = countingClient();
+    await verifyCitations(manyDocs(MAX_DISTINCT_DOCUMENTS + 20), client);
+    expect(calls.length).toBe(MAX_DISTINCT_DOCUMENTS);
+  });
+
+  it("reports every citation past the cap as unchecked, never unresolved", async () => {
+    const { client } = countingClient();
+    const result = await verifyCitations(manyDocs(MAX_DISTINCT_DOCUMENTS + 20), client);
+
+    expect(result.total).toBe(MAX_DISTINCT_DOCUMENTS + 20);
+    expect(result.resolved).toBe(MAX_DISTINCT_DOCUMENTS);
+    expect(result.unresolved).toEqual([]);
+    expect(result.unchecked.length).toBe(20);
+  });
+
+  it("explains the cap in the suggestion and leaves title null", async () => {
+    const { client } = countingClient();
+    const result = await verifyCitations(manyDocs(MAX_DISTINCT_DOCUMENTS + 1), client);
+    const last = result.details[result.details.length - 1];
+
+    expect(last?.status).toBe("unchecked");
+    expect(last?.title).toBeNull();
+    expect(last?.suggestion).toBe(DOC_CAP_SUGGESTION);
+  });
+
+  // The cap counts DISTINCT names, so the ordinary shape of a real draft - one document cited
+  // many times - must never trip it. Counting citations instead would refuse to check a
+  // perfectly cheap call.
+  it("does not trip on one document cited far more times than the cap", async () => {
+    const { client, calls } = countingClient();
+    const text = Array.from({ length: MAX_DISTINCT_DOCUMENTS * 4 }, (_, i) => `See report.pdf p.${i + 1}.`).join(" ");
+    const result = await verifyCitations(text, client);
+
+    expect(calls).toEqual(["report.pdf"]);
+    expect(result.unchecked).toEqual([]);
+  });
+
+  it("checks exactly the cap's worth of documents without reporting anything unchecked", async () => {
+    const { client, calls } = countingClient();
+    const result = await verifyCitations(manyDocs(MAX_DISTINCT_DOCUMENTS), client);
+
+    expect(calls.length).toBe(MAX_DISTINCT_DOCUMENTS);
+    expect(result.resolved).toBe(MAX_DISTINCT_DOCUMENTS);
+    expect(result.unchecked).toEqual([]);
   });
 });

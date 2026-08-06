@@ -102,6 +102,36 @@ const DOC_UNCHECKED_SUGGESTION =
   "citation - leave it and check again later. The specific failure is written to the " +
   "server's stderr log rather than reported here.";
 
+// Bound on how many DISTINCT document names one call will look up.
+//
+// Nothing bounded this before, and the input is an arbitrary string: 82 KiB of ordinary text
+// names 5000 distinct documents, lookups are sequential, and each backend request is bounded
+// only by the SDK's 60-second default, so a single ordinary-looking call could occupy the
+// server for days and spend API quota the whole time. The forwarded AbortSignal stops a call
+// the host gave up on; this stops the call from being unreasonable in the first place,
+// including when nothing is watching.
+//
+// DISTINCT names, not citations: the ordinary shape of a real draft is one document cited many
+// times, and that costs exactly one lookup, so counting citations would refuse a call that is
+// in fact cheap. The number is chosen against the timeout a host actually applies - at a
+// realistic few hundred milliseconds per lookup this is seconds of work, well inside a typical
+// 60-second tool-call budget, while a draft citing more than fifty different documents is
+// outside the profile this tool was built for.
+//
+// Exported so a test cannot drift from the real value, and so the README's disclosure can be
+// checked against it.
+export const MAX_DISTINCT_DOCUMENTS = 50;
+
+// Static, like the other explanations here, and for the same reason: it is handed to a model,
+// so it must be bounded and quote nothing. It does not change the verdict - the token stays
+// `unchecked` - and the wording leads with "not checked" rather than the cap, because the one
+// thing a consuming agent must not conclude is that anything was found to be missing.
+export const DOC_CAP_SUGGESTION =
+  "This citation was not checked at all: this call had already looked up the maximum number " +
+  `of distinct documents it will check in one go (${MAX_DISTINCT_DOCUMENTS}). That is NOT ` +
+  "evidence that the document is missing, so do not delete this citation. Check the remaining " +
+  "citations by calling the tool again with a smaller portion of the draft.";
+
 // Bound on one diagnostic line written to stderr. An MCP host captures this server's
 // stderr into its log files, so a huge response body must not flood them.
 const MAX_LOG_LINE_CHARS = 400;
@@ -168,7 +198,12 @@ function nodeAbsentSuggestion(nodeId: string): string {
 type DocOutcome =
   | { kind: "found"; doc: DocumentInfo }
   | { kind: "not-found"; suggestion: string | null }
-  | { kind: "unchecked" };
+  | { kind: "unchecked" }
+  // Past MAX_DISTINCT_DOCUMENTS: no lookup was attempted. A separate kind rather than reusing
+  // `unchecked`, because the two need different explanations - one says the backend could not
+  // be reached, the other says this call chose not to ask - and both must stay far away from
+  // `unresolved`.
+  | { kind: "over-cap" };
 
 export interface VerifyOptions {
   // The MCP request's own AbortSignal, forwarded by the tool handler (src/server.ts).
@@ -238,6 +273,11 @@ async function classify(
   // `unresolved` - and nothing about page or node can be checked without a real document, so
   // this returns immediately.
   const docOutcome = await getDocOutcome(docName, client, docOutcomes);
+  if (docOutcome.kind === "over-cap") {
+    // `title` stays null for the same reason as the unchecked branch below: nothing was
+    // confirmed about this document, not even that it exists.
+    return { token, status: "unchecked", title: null, suggestion: DOC_CAP_SUGGESTION };
+  }
   if (docOutcome.kind === "unchecked") {
     // `title` stays null: nothing was confirmed about this document, not even that it
     // exists. The explanation is static - see DOC_UNCHECKED_SUGGESTION.
@@ -332,6 +372,12 @@ async function getDocOutcome(
 ): Promise<DocOutcome> {
   const cached = cache.get(docName);
   if (cached) return cached;
+
+  // The cap is applied HERE, after the memo lookup, so a name already looked up in this call
+  // costs nothing against the budget however many times it is cited. The over-cap answer is
+  // deliberately NOT cached: caching it would consume a budget slot for a document that was
+  // never asked about, and the map's size IS the budget counter.
+  if (cache.size >= MAX_DISTINCT_DOCUMENTS) return { kind: "over-cap" };
 
   let outcome: DocOutcome;
   try {

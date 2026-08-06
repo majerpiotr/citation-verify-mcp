@@ -535,8 +535,16 @@ Known and carried deliberately.
   distinct document costing one existence lookup plus (if a node is cited) one or more
   structure requests. A draft citing many distinct documents can take many multiples of 60
   seconds in the worst case. In practice the host's own tool-call timeout fires first, which
-  surfaces as an MCP error - safe, since every citation is then `unchecked` - but until it
-  does, a slow backend is indistinguishable from a hang.
+  surfaces as an MCP error - safe, since every citation is then `unchecked` - and the call now
+  stops when that happens instead of working through the rest of the draft, but until it does,
+  a slow backend is indistinguishable from a hang.
+- **At most 50 distinct documents are looked up per call.** The `text` argument itself has no
+  length limit, and the parser is cheap - but a draft can name thousands of different documents
+  in well under 100 KiB, and each one costs a sequential lookup. Past the fiftieth distinct
+  name, every further citation comes back `unchecked` with a `suggestion` saying so, never
+  `unresolved`: nothing was checked, so nothing may be deleted. The cap counts distinct names,
+  so one document cited a thousand times costs one lookup and never trips it. Split a draft that
+  genuinely cites more than fifty sources and call the tool once per part.
 - **`PAGEINDEX_FOLDER_ID` is not implemented.** Nothing scopes a lookup to a folder; every
   lookup resolves against the account's whole corpus. If two documents in the same account
   share a file name, existence still answers correctly but identity does not: the lookup

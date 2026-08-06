@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/server.js";
-import { NO_NEAR_MATCH_SUGGESTION } from "../src/resolver.js";
+import { NO_NEAR_MATCH_SUGGESTION, MAX_DISTINCT_DOCUMENTS } from "../src/resolver.js";
 import type { DocLookup, DocLookupResult } from "../src/pageindex-client.js";
 
 interface FakeConfig {
@@ -725,6 +725,21 @@ describe("the prose documentation states the load-bearing claims the tool descri
     expect(grammarDoc).toMatch(
       /character limit does NOT fail that way[\s\S]{0,400}emits \*\*nothing at all\*\*/i,
     );
+  });
+
+  // The per-call lookup cap is a limit an operator has to know about, because it changes what
+  // a complete-looking result means: a large draft can come back with citations `unchecked`
+  // for a reason that has nothing to do with the backend. The NUMBER is read from the
+  // implementation rather than written here, so raising the cap without updating the README
+  // fails instead of quietly publishing a stale figure - the same rot this whole block exists
+  // to catch, and the reason MAX_DISTINCT_DOCUMENTS is exported at all.
+  it("discloses the per-call distinct-document cap, with the real number", () => {
+    expect(readme).toMatch(
+      new RegExp(`at most ${MAX_DISTINCT_DOCUMENTS} distinct documents are looked up per call`, "i"),
+    );
+    // And says which way it fails. A cap that produced `unresolved` would make a consuming
+    // agent delete work over a budget decision, so the safe direction is the load-bearing half.
+    expect(readme).toMatch(/comes? back `unchecked`[\s\S]{0,80}never\s+`unresolved`/i);
   });
 
   it("discloses in both files that a bare name in a script without word spaces is not extracted", () => {
