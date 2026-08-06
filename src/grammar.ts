@@ -183,31 +183,74 @@ const RE_QUOTED_DOC = new RegExp(QUOTE_DELIMITERS.map(quotedNameFragment).join("
 // it is genuinely file-name-shaped, not merely because it ends in ".pdf" somewhere inside
 // a delimiter pair - an ordinary quotation ("the data comes from report.pdf") or a
 // markdown/code span can easily satisfy the structural pattern above without being a file
-// name. All four conditions must hold:
-//   - matches ^[letter or digit][name char, space or dot]*\.pdf$ (extension
-//     case-insensitive), i.e. starts with a real character, contains only name-shaped
-//     characters and spaces, and has no leading/trailing whitespace inside the delimiters
-//     (enforced by the anchors). Unicode-aware, matching the bare name class - an
-//     ASCII-only shape test would reject every non-ASCII name and silently push it back to
-//     the bare pass, which is exactly the fragment path this round removed.
+// name. Three conditions must hold:
+//   - matches RE_FILE_NAME_SHAPE (extension case-insensitive), i.e. starts with a real
+//     character, contains only name-shaped characters and spaces, and has no
+//     leading/trailing whitespace inside the delimiters (enforced by the anchors).
+//     Unicode-aware, matching the bare name class - an ASCII-only shape test would reject
+//     every non-ASCII name and silently push it back to the bare pass, which is exactly the
+//     fragment path this round removed.
 //   - at most MAX_DELIMITED_NAME_WORDS space-separated words
 //   - at most MAX_DELIMITED_NAME_CHARS characters
-// A REJECTED span is treated as if it were never quoted at all: it must not be added to
-// quotedSpans, so the bare match inside it (e.g. plain "report.pdf") still surfaces. This
-// is the important half of the fix - suppression is what turned an over-match into a
-// deleted valid citation in the probe that prompted this round.
+//
+// Review-finding rework: the three ways of failing those conditions are NOT interchangeable,
+// and treating them alike is what let a rejected span leak a fragment of the name the author
+// actually wrote. Measured before the fix: `"_internal draft.pdf"` was checked as
+// `draft.pdf`, `"A B C D E.pdf"` as `E.pdf` - a `resolved` verdict on a DIFFERENT real
+// document, which is worse than either outcome the rest of this grammar trades off (a false
+// `unresolved` is at least visible; a silence is recoverable by quoting). So the verdict is
+// three-valued and each branch is handled differently at the call site:
+//
+//   "name"       - accept it.
+//   "over-cap"   - name-shaped in its characters, so this IS one name the author wrote; it is
+//                  merely longer or wordier than this grammar will vouch for. RESERVE the
+//                  span and emit nothing: silence, never a fragment.
+//   "not-a-name" - carries a character a file name in this grammar cannot hold, so it is
+//                  prose. Treated as if it were never quoted at all - NOT added to
+//                  quotedSpans, so a real bare name inside it (`"the data comes from
+//                  report.pdf"`) still surfaces. Removing this is what turned an over-match
+//                  into a deleted valid citation in the probe that prompted the earlier
+//                  round, so it stays.
 const MAX_DELIMITED_NAME_CHARS = 80;
 const MAX_DELIMITED_NAME_WORDS = 4;
+
+// A leading `_`, `-` or `.` is legal in a real file name (and is already legal in the BARE
+// pattern), so rejecting it made `"_internal draft.pdf"` fall through and be read as
+// `draft.pdf`. It is admitted here, but ONLY when bound directly to a letter or digit: a
+// punctuation mark followed by a space is prose decoration, not a name, and admitting it
+// would turn a quoted list bullet (`"- report.pdf"`) or an elision (`"... report.pdf"`) into
+// an invented document name and a false `unresolved` - the mirror of the defect this fixes.
+// One such character, not a run, for the same reason.
 const RE_FILE_NAME_SHAPE = new RegExp(
-  String.raw`^[\p{L}\p{N}][${NAME_CHARS} .]*\.${PDF_EXT}$`,
+  String.raw`^[_\-.]?[\p{L}\p{N}][${NAME_CHARS} .]*\.${PDF_EXT}$`,
   "u",
 );
 
-function isFileNameShaped(content: string): boolean {
-  if (content.length === 0 || content.length > MAX_DELIMITED_NAME_CHARS) return false;
-  if (!RE_FILE_NAME_SHAPE.test(content)) return false;
+type DelimitedNameVerdict = "name" | "over-cap" | "not-a-name";
+
+// The two caps are NOT interchangeable, and this is the load-bearing asymmetry:
+//
+//   - Over the WORD cap is indistinguishable from prose. `"the data comes from report.pdf"`
+//     and `"A B C D E.pdf"` are both five words of letters and spaces; nothing structural
+//     separates a wordy file name from an ordinary quoted sentence that happens to mention
+//     one. Reserving the span would silence the real bare name inside every such quotation,
+//     which is the defect the earlier round fixed, so it keeps falling through. The fragment
+//     this can still leak is disclosed in all three user-facing surfaces.
+//   - Over the CHARACTER cap while WITHIN the word cap is not prose: four words cannot fill
+//     80 characters of ordinary English. It is one very long name, so the span is reserved
+//     and nothing is emitted - silence instead of the name's tail read as a different
+//     document.
+//
+// Hence the word cap is checked first and answers "not-a-name", and only the character cap
+// answers "over-cap". The character-class test runs before both, because an over-length span
+// still has to be recognized as name-shaped for that distinction to exist at all.
+function classifyDelimitedName(content: string): DelimitedNameVerdict {
+  if (content.length === 0) return "not-a-name";
+  if (!RE_FILE_NAME_SHAPE.test(content)) return "not-a-name";
   const words = content.split(" ").filter((w) => w.length > 0);
-  return words.length <= MAX_DELIMITED_NAME_WORDS;
+  if (words.length > MAX_DELIMITED_NAME_WORDS) return "not-a-name";
+  if (content.length > MAX_DELIMITED_NAME_CHARS) return "over-cap";
+  return "name";
 }
 
 // Reads the first defined capturing group across a set of mutually-exclusive alternation
@@ -878,17 +921,20 @@ export function extractCitations(text: string): Citation[] {
   }
 
   // Quoted document mentions - preferred over a bare match covering the same span, but
-  // ONLY when the delimited content is genuinely file-name-shaped (isFileNameShaped).
-  // Computed before bare mentions so an ACCEPTED span can be excluded from them; a
-  // REJECTED span contributes nothing here - not a docMention, not a reserved span - so
+  // ONLY when the delimited content is genuinely file-name-shaped (classifyDelimitedName).
+  // Computed before bare mentions so an ACCEPTED span can be excluded from them; a span
+  // rejected as PROSE contributes nothing here - not a docMention, not a reserved span - so
   // the bare match inside it (e.g. plain "report.pdf" inside an ordinary quotation) is
-  // left completely free to be found in the bare pass below.
+  // left completely free to be found in the bare pass below. An OVER-CAP span is the third
+  // case and is handled the opposite way: reserved, so nothing at all comes out of it.
   const quotedPageByStart = new Map<number, { from: number; to: number }>();
   for (const m of text.matchAll(RE_QUOTED_DOC_PAGE)) {
     const start = m.index ?? 0;
     const name = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 1);
     const from = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 2);
-    if (name === undefined || from === undefined || !isFileNameShaped(name)) continue;
+    // Only an accepted name can carry a page. An over-cap span emits no document at all, so
+    // there is nothing for a page to bind to; recording one here would be dead weight.
+    if (name === undefined || from === undefined || classifyDelimitedName(name) !== "name") continue;
     // The page names its own document, which is not this one: drop the page (the quoted
     // name is still extracted by the pass below, just without it). See pageOwnerFollows.
     if (pageOwnerFollows(text, docStarts, start + m[0].length)) continue;
@@ -902,13 +948,24 @@ export function extractCitations(text: string): Citation[] {
     const start = m.index ?? 0;
     const end = start + m[0].length;
     const full = delimiterGroup(m, QUOTED_DOC_GROUP_STRIDE, 1);
-    if (full === undefined || !isFileNameShaped(full)) continue; // not a name: ignore the quote entirely
+    if (full === undefined) continue;
+    const verdict = classifyDelimitedName(full);
+    // Prose: ignore the quote entirely, leaving any real bare name inside it to the bare pass.
+    if (verdict === "not-a-name") continue;
+    // One name, over the word or character cap. RESERVING is the whole point: without it the
+    // bare pass matched the tail of the name the author wrote and checked it as a different
+    // document (`"A B C D E.pdf"` was read as `E.pdf`). Nothing is emitted for this span in
+    // any status - a silence the author can recover from by citing a shorter real name.
+    if (verdict === "over-cap") {
+      reserveSpan(quotedSpans, start, end);
+      continue;
+    }
     // Re-review fix (Minor 4): the URL exclusion used to be applied to the bare pass only,
     // so a URL's own path segment was still extracted whenever it happened to be delimited
     // ("https://example.com/`report.pdf`"). Both the README and the tool description state
     // flatly that a URL's path segment is not extracted in any status, so the quoted pass
     // has to honour the same rule. The span is still RESERVED (unlike a span rejected by
-    // isFileNameShaped above): dropping it silently would leave the bare match inside the
+    // classifyDelimitedName as prose above): dropping it silently would leave the bare match
     // delimiters free to be picked up by the bare pass, where the delimiter itself now ends
     // the URL run - the exclusion would undo itself one pass later.
     if (isUrlPrefixed(urlScheme, start)) {

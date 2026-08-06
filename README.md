@@ -256,10 +256,12 @@ Cite in one of these forms:
 - A name with spaces, in double quotes: "Annual Report.pdf" p.3
 
 A quoted name is only honoured when it is at most 4 words and 80 characters, starts with
-a letter or digit, and contains nothing but letters, digits, spaces, dots, underscores and
-hyphens. A name outside that shape is either dropped entirely (checked as nothing, counted
-in nothing) or silently read as a shorter fragment of itself and checked as a different
-document, so prefer the shortest real file name available.
+a letter or digit (or with a single _ - or . bound directly to one), and contains nothing but
+letters, digits, spaces, dots, underscores and hyphens. A name outside that shape is either
+dropped entirely (checked as nothing, counted in nothing) or silently read as a shorter
+fragment of itself and checked as a different document, so prefer the shortest real file name
+available. Only a character or the word limit can produce that fragment; a name within 4 words
+but over 80 characters is dropped instead.
 
 Write the file name so that nothing is glued to it. A name touching / : % + @ # = & or \
 (for example sub/chapter.pdf) is not checked at all and is reported nowhere, and neither is
@@ -429,10 +431,12 @@ The grammar is fixed, not learned, and deliberately narrow. In summary:
   contains a `[` (`[node: abc[1]]`) is not recognized as a tag at all - though a `.pdf` written
   inside it is still checked.
 - **A name containing spaces must be quoted** in double quotes or backticks *and* be
-  file-name-shaped: at most 4 words, at most 80 characters, **beginning with a letter or
-  digit**, and otherwise only letters, digits, spaces, dots, underscores and hyphens.
-  `"Annual Report.pdf"` is read whole. A name outside that shape is dropped entirely or
-  silently read as a shorter fragment of itself and checked as a different document.
+  file-name-shaped: at most 4 words, at most 80 characters, **starting with a letter or digit,
+  or with a single `_`, `-` or `.` bound directly to one**, and otherwise only letters, digits,
+  spaces, dots, underscores and hyphens. `"Annual Report.pdf"` and `"_internal draft.pdf"` are
+  both read whole. A name outside that shape is dropped entirely or silently read as a shorter
+  fragment of itself and checked as a different document - except when the only thing it
+  exceeds is the 80-character limit, which drops it rather than leaving a fragment.
 - **A bare name written in a script that does not separate words with spaces** (Han,
   Hiragana, Katakana, Thai, Lao, Khmer, Myanmar, Tibetan) is not extracted at all; quote it
   to have it checked. A Latin-script name written directly against such text, with no space
@@ -497,8 +501,9 @@ Known and carried deliberately.
   reports a document the author never wrote and turns a silence into a false `unresolved`. A
   bare document name in a script that does not separate words with spaces is likewise not
   extracted at all; quote it to have it checked. A space-bearing name that fails the quoted
-  shape check is dropped entirely or read as a shorter fragment and checked as a different
-  document.
+  shape check on a character or on the word limit is dropped entirely or read as a shorter
+  fragment and checked as a different document; failing on the 80-character limit alone drops
+  it, never leaving a fragment.
 - **A page claim can go unverified while its document is still checked.** A page phrase that
   names its own document (`page 12 of results.pdf`) is dropped rather than bound, because the
   document to its left is not its owner and binding it there would report a real document as

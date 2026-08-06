@@ -46,8 +46,9 @@ case-sensitive, so a citation of `Report.PDF` will not match an existing `report
 An unquoted name may contain letters, combining marks, digits, `_`, `-` and `.`, in **any
 script** - `raport-glowny-2024.pdf`, `otchet-2024.pdf` and `bogoseo.pdf` written in their own
 scripts are all read whole. It may not contain a space (quote it, see
-[Quoted names](#quoted-names)), and unlike a quoted name it *may* begin with `_`, `-` or `.`
-(`_internal-draft.pdf` is read whole).
+[Quoted names](#quoted-names)), and it may begin with `_`, `-` or `.`
+(`_internal-draft.pdf` is read whole) - as may a quoted name, provided the mark is bound
+directly to a letter or digit.
 
 ### A bare name must stand as its own token
 
@@ -274,19 +275,22 @@ file-name-shaped:
 
 - at most 4 space-separated words,
 - at most 80 characters,
-- **beginning with a letter or digit**,
+- **starting with a letter or digit, or with a single `_`, `-` or `.` bound directly to one**,
 - and otherwise letters, combining marks, digits, spaces, dots, underscores and hyphens only
   (letters and digits of any script, so `"Rapport Financier.pdf"` is honoured whole).
 
-The leading-character rule is where the quoted and unquoted paths differ, and the difference is
-silent: `_`, `.` and `-` are legal inside an unquoted name **and at its start**
-(`_internal-draft.pdf` is read whole), but a quoted name starting with one fails the shape
-check. `"_internal draft.pdf"` is therefore read as `draft.pdf`, a different document.
+The leading-character rule admits a real file name that starts with punctuation, so
+`"_internal draft.pdf"`, `` `-notes final.pdf` `` and `".hidden report.pdf"` are all read
+whole. The punctuation must be bound to the letter or digit that follows it: one mark, no
+space after it. A mark followed by a space is prose decoration rather than part of a name, so
+a quoted list bullet (`"- report.pdf"`) or an elision (`"... report.pdf"`) still fails the
+shape check, and the real bare name inside it is what gets read - which is the intended
+outcome there.
 
 **Quoting does not rescue a name containing any other character** (an apostrophe, `&`, comma,
-colon, parenthesis, `+`, `/`, ...) nor one over the word or character limit. A rejected quoted
-name falls through to be matched exactly like an unquoted one, and the result is not one single
-predictable fallback:
+colon, parenthesis, `+`, `/`, ...) nor one over the word limit. A quoted name rejected for one
+of those reasons falls through to be matched exactly like an unquoted one, and the result is
+not one single predictable fallback:
 
 - It can be **dropped entirely**: `Report (final).pdf` (quoted or not) matches nothing at all,
   because the parenthesis breaks the allowed-character run on both sides. `"Report+Final.pdf"`
@@ -302,10 +306,18 @@ predictable fallback:
   `"Q3 Financial Results Final Draft.pdf"` is five words, so it is rejected and read as
   `Draft.pdf`.
 
+**The character limit does NOT fail that way.** A quoted name that is name-shaped and within
+the 4-word limit but longer than 80 characters emits **nothing at all** - no citation in any
+status, `total` unchanged. The two limits are treated differently on purpose: five words of
+letters and spaces is indistinguishable from an ordinary quoted sentence, so suppressing it
+would silence the real name inside every prose quotation, while four words cannot fill 80
+characters of ordinary prose, so a span that long is one very long file name and its tail must
+not be checked as a different document.
+
 No such outcome produces a false `resolved` on its own, but a real citation to such a name can
-go silently unverified with no trace in `details` (the drop case) or get checked against a
-wrong, often unrecognizable document (the fragment case). Check `title` on a `resolved`
-verdict, and `total` for an unexpected drop, to catch either.
+go silently unverified with no trace in `details` (the drop and character-limit cases) or get
+checked against a wrong, often unrecognizable document (the fragment case). Check `title` on a
+`resolved` verdict, and `total` for an unexpected drop, to catch either.
 
 Single quotes are **not** a delimiter, deliberately: ordinary apostrophes in prose ("don't",
 "the team's") would otherwise be misread as opening a document name.
@@ -336,7 +348,9 @@ makes a real space-bearing file name checkable at all.
 - A page range joined by an em dash character, the word "through", or anything other than a
   hyphen, en dash or "to" - truncated to its first page rather than dropped.
 - A document name with spaces, unquoted, or quoted but failing the file-name shape check -
-  dropped entirely or read as a shorter fragment.
+  dropped entirely, or read as a shorter fragment when the shape check failed on a character
+  or on the word limit. Over the character limit within 4 words it is dropped, never read as a
+  fragment.
 - A **bare** document name in a script that does not separate words with spaces, and a
   Latin-script name written directly against such text with no space between them.
 - A name touching `/`, `:`, `%`, `+`, `@`, `#`, `=`, `&`, `\` or a format control character -
@@ -395,10 +409,11 @@ Both directions are known, measured and carried deliberately. Neither is a bug r
 - `node_id:<name>.pdf` and `[node:<name>.pdf]` written with no space after the colon report an
   `unchecked` node id instead of checking the document. Not a silence, and not dangerous - an
   `unchecked` citation is never deleted - but the document goes unverified.
-- A document name with spaces that fails the quoted shape check is either dropped entirely or
-  read as a shorter fragment, and the fragment is checked as a different document. A
-  single-quoted name with spaces (`'Annual Report.pdf'`) is the same failure with a more
-  plausible-looking cause.
+- A document name with spaces that fails the quoted shape check on a character or on the word
+  limit is either dropped entirely or read as a shorter fragment, and the fragment is checked
+  as a different document. A single-quoted name with spaces (`'Annual Report.pdf'`) is the same
+  failure with a more plausible-looking cause. Failing on the character limit alone is a plain
+  drop, never a fragment.
 - A page marker on a different line from its document, or separated from it by more prose than
   the closed connector list allows, is not read as a page - the document alone is checked and
   the page claim goes unverified.

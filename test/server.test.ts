@@ -445,16 +445,19 @@ describe("createServer verify_citations tool", () => {
     );
     // The allowed-character set (not a forbidden-character list, which reads as exhaustive
     // but omits `(`, `)`, `+`, `/`, `#`, etc. - Minor fix). The set is now Unicode-aware
-    // (grammar.ts NAME_CHARS) and the FIRST character must be a letter or digit
-    // (RE_FILE_NAME_SHAPE), which the old wording omitted - pinned as one conjunction with
-    // the word/character limits so the leading-character rule cannot rot out again.
+    // (grammar.ts NAME_CHARS), and the leading-character rule is pinned as one conjunction
+    // with the word/character limits so it cannot rot out again. A single `_`, `-` or `.`
+    // bound to a letter or digit is admitted (a legal file name); the same character followed
+    // by a space is not, because that is prose decoration.
     expect(description).toMatch(
-      /file-name-shaped \(at most 4 words, 80 characters, beginning with a letter or digit, and otherwise only letters\/digits\/spaces\/dots\/underscores\/hyphens - letters and digits of ANY script count\)/i,
+      /file-name-shaped \(at most 4 words, 80 characters, starting with a letter or digit or a single leading `_`, `-` or `\.` bound to one, and otherwise only letters\/digits\/spaces\/dots\/underscores\/hyphens - letters and digits of ANY script count\)/i,
     );
-    // The leading-character rule differs between the quoted and unquoted paths, and the
-    // consequence is a silently different document - pinned with its measured example.
+    // The two caps fail DIFFERENTLY, and the asymmetry is the whole reason the fragment
+    // leak is narrowed rather than closed. Pinned as one clause with its justification: a
+    // rewording that keeps "over 4 words" and "over 80 characters" but swaps which one emits
+    // nothing would invert the safety property while leaving both halves present.
     expect(description).toMatch(
-      /A leading `_`, `\.` or `-` fails the shape check even though it is legal inside an UNQUOTED name, so `"_internal draft\.pdf"` is read as `draft\.pdf`/,
+      /Over 4 words is the case that can still leave a fragment, because 5 words of letters and spaces is indistinguishable from an ordinary quoted sentence; over 80 characters within 4 words emits NOTHING at all instead \(`total: 0`\)/,
     );
     // Containment for the Unicode widening: a BARE name in a script with no word spaces is
     // not extracted at all, and quoting is the supported route for it.
@@ -652,8 +655,26 @@ describe("the prose documentation states the load-bearing claims the tool descri
   });
 
   it("states the quoted-name shape rule including its leading character, in both files", () => {
-    expect(readme).toMatch(/begin(?:s|ning) with a letter or digit/i);
-    expect(grammarDoc).toMatch(/begin(?:s|ning) with a letter or digit/i);
+    // A leading `_`, `-` or `.` is admitted only when bound to a letter or digit. Both halves
+    // are pinned: dropping the binding condition would describe a grammar that reads a quoted
+    // list bullet as a document name, which is the opposite trade from the one implemented.
+    expect(readme).toMatch(
+      /start(?:s|ing) with a letter or digit[\s\S]{0,60}single `?_`?, `?-`? or `?\.`? bound directly to one/i,
+    );
+    expect(grammarDoc).toMatch(
+      /start(?:s|ing) with a letter or digit[\s\S]{0,60}single `?_`?, `?-`? or `?\.`? bound directly to one/i,
+    );
+  });
+
+  // The asymmetry between the two caps is a safety property, not a detail: over the word limit
+  // can still leave a fragment checked as a different document, over the character limit emits
+  // nothing. A reader who has only half of that will trust a `resolved` verdict they should
+  // have checked, so both files must carry both halves.
+  it("states in both files that the character limit drops rather than leaving a fragment", () => {
+    expect(readme).toMatch(/80-character limit[\s\S]{0,40}drops? it rather than leaving a fragment/i);
+    expect(grammarDoc).toMatch(
+      /character limit does NOT fail that way[\s\S]{0,400}emits \*\*nothing at all\*\*/i,
+    );
   });
 
   it("discloses in both files that a bare name in a script without word spaces is not extracted", () => {

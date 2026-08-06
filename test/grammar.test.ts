@@ -432,6 +432,109 @@ describe("extractCitations - a prose quote must not become the document name (re
   });
 });
 
+// Review finding, adjudicated: a quoted span rejected by the shape check fell through to the
+// bare pass, which then matched the TAIL of the intended name and checked it as a different
+// document. Measured before the fix: `"_internal draft.pdf"` produced `draft.pdf`,
+// `"A B C D E.pdf"` produced `E.pdf`, and an 86-character two-word name produced its last
+// word. Every user-facing surface disclosed this, but disclosure is not safety: the outcome is
+// a `resolved` verdict on a DIFFERENT, real document, which is worse than either failure mode
+// the grammar's stated priorities weigh against each other - a false `unresolved` is at least
+// visible as a failure, and a silence is recoverable by quoting, while a confirmation of a
+// citation nobody wrote is neither.
+//
+// The fall-through itself cannot simply be removed: the tests above depend on it, because a
+// bare name sitting inside an ordinary prose quotation must still stand. Structurally those
+// two cases are identical (a rejected span, a bare name preceded by a space), so the fix
+// discriminates on the REASON for rejection instead:
+//
+//   - a leading `_`, `-` or `.` bound directly to a name character is a legal file name, and
+//     is now accepted whole;
+//   - content that is name-shaped in its characters but over the word or character cap is one
+//     name the author wrote, so the span is RESERVED and nothing is emitted;
+//   - content carrying a character a name cannot hold is prose, and keeps falling through.
+describe("extractCitations - a rejected quoted name never leaks a fragment of itself", () => {
+  it("accepts a leading underscore as part of the name instead of reading its tail", () => {
+    expect(extractCitations('See "_internal draft.pdf" for the numbers.')).toEqual([
+      { token: "_internal draft.pdf", docName: "_internal draft.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("accepts a leading hyphen in a backtick-quoted name", () => {
+    expect(extractCitations("See `-notes final.pdf` for the numbers.")).toEqual([
+      { token: "-notes final.pdf", docName: "-notes final.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("accepts a leading dot (a hidden file is still a file)", () => {
+    expect(extractCitations('See ".hidden report.pdf" here.')).toEqual([
+      { token: ".hidden report.pdf", docName: ".hidden report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("binds a page to a name the leading-character rule used to reject", () => {
+    expect(extractCitations('See "_internal draft.pdf" p.12.')).toEqual([
+      {
+        token: "_internal draft.pdf#p12",
+        docName: "_internal draft.pdf",
+        pages: { from: 12, to: 12 },
+        nodeId: null,
+      },
+    ]);
+  });
+
+  it("emits nothing for a name over the character cap, rather than its last word", () => {
+    const name = `${"a".repeat(75)} report.pdf`; // 2 words, 86 characters
+    expect(name.length).toBeGreaterThan(80);
+    expect(extractCitations(`See "${name}" here.`)).toEqual([]);
+  });
+
+  // The other half of the discriminator: leading punctuation only counts as part of a name
+  // when it is bound directly to a name character. A punctuation mark followed by a space is
+  // prose decoration (a list bullet, an elision), so the span must keep falling through and
+  // the real bare name inside it must still stand. Without this the fix would turn an
+  // ordinary quoted excerpt into an invented document name and a false `unresolved`.
+  it("still reads the bare name inside a quoted list bullet", () => {
+    expect(extractCitations('The list read "- report.pdf" verbatim.')).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("still reads the bare name inside a quoted elision", () => {
+    expect(extractCitations('The note read "... report.pdf" verbatim.')).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  // A character-class rejection is unchanged - this is the prose-quotation path the tests
+  // above depend on, restated here so the discriminator's third branch is pinned alongside
+  // the other two rather than only in a different describe block.
+  it("still reads the bare name inside a prose quotation carrying a colon", () => {
+    expect(extractCitations('He wrote "the source: report.pdf" in the draft.')).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  // An over-cap span is RESERVED, so it must not leak through a second route either: the
+  // bare pass is where the fragment came from, and a page phrase attached to the span must
+  // not resurrect it.
+  it("emits nothing for an over-character-cap name even when a page follows it", () => {
+    const name = `${"a".repeat(75)} report.pdf`;
+    expect(extractCitations(`See "${name}" p.12 here.`)).toEqual([]);
+  });
+
+  // The WORD cap deliberately still falls through, and this is the asymmetry that makes the
+  // fix defensible rather than arbitrary: five words of letters and spaces is exactly what an
+  // ordinary quoted sentence looks like, so reserving it would silence the real bare name
+  // inside every prose quotation - the defect an earlier round fixed. Four words cannot fill
+  // 80 characters of English, so the CHARACTER cap carries no such ambiguity and is reserved.
+  // Pinned here so the two caps cannot be quietly collapsed back into one rule.
+  it("still falls through on a name over the word cap (accepted, disclosed trade-off)", () => {
+    expect(extractCitations('See "A B C D E.pdf" here.')).toEqual([
+      { token: "E.pdf", docName: "E.pdf", pages: null, nodeId: null },
+    ]);
+  });
+});
+
 describe("extractCitations - re-review fix: Minor", () => {
   it("does not re-admit cross-sentence node binding when a sentence genuinely ends in 'p.'", () => {
     // "p." is only a page abbreviation - and only then exempt from being a sentence

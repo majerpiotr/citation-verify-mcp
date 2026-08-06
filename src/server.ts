@@ -121,14 +121,16 @@ export function createServer(client: DocLookup): McpServer {
         "before deleting anything, since the citation there may be a valid web " +
         "reference. " +
         "A name containing spaces must be wrapped in double quotes or backticks AND be " +
-        "file-name-shaped (at most 4 words, 80 characters, beginning with a letter or " +
-        "digit, and otherwise only letters/digits/spaces/dots/underscores/hyphens - " +
+        "file-name-shaped (at most 4 words, 80 characters, starting with a letter or digit " +
+        "or a single leading `_`, `-` or `.` bound to one, and otherwise only " +
+        "letters/digits/spaces/dots/underscores/hyphens - " +
         "letters and digits of ANY script count); quoting does not rescue any other " +
         "character, which may instead drop the match entirely (`total: 0`) or leave a shorter, " +
         "not-necessarily-last fragment read as a DIFFERENT document - check `title` " +
-        "on a `resolved` verdict to catch this. A leading `_`, `.` or `-` fails the " +
-        'shape check even though it is legal inside an UNQUOTED name, so `"_internal ' +
-        'draft.pdf"` is read as `draft.pdf`. A quoted span of up to 4 words ending ' +
+        "on a `resolved` verdict to catch this. Over 4 words is the case that can still " +
+        "leave a fragment, because 5 words of letters and spaces is indistinguishable from " +
+        "an ordinary quoted sentence; over 80 characters within 4 words emits NOTHING at all " +
+        "instead (`total: 0`). A quoted span of up to 4 words ending " +
         "in `.pdf` is read as a document name even inside inline code, so a shell " +
         "example can report `unresolved`. " +
         "A BARE name written in a script that does not separate words with spaces " +
