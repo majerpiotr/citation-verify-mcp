@@ -98,7 +98,17 @@ Keep commits scoped to one defect or one feature, with an explicit path list.
   `(` or `)` is silently dropped in every status, and so is any name touching `/ : % + @ #
   = & \` or a format control character, or written directly against a script that uses no
   word spaces (the same ruled-on trade-off: a false `unresolved` on a valid citation is
-  worse than a silence, and silence is recoverable by quoting). Each case is disclosed in
+  worse than a silence, and silence is recoverable by quoting).
+  A quoted name rejected by `classifyDelimitedName` in `src/grammar.ts` has THREE outcomes and
+  they are not interchangeable - collapsing them reintroduces a reviewed defect. Rejected as
+  prose (a character a name cannot hold) falls through, so a real bare name inside a
+  quotation still stands. Over the WORD cap also falls through, and can therefore still leave
+  a fragment checked as a DIFFERENT document, because five words of letters and spaces is
+  indistinguishable from an ordinary quoted sentence - measured and accepted, not overlooked.
+  Over the CHARACTER cap within the word cap reserves the span and emits nothing, because
+  four words cannot fill 80 characters of prose. A leading `_`, `-` or `.` BOUND to a letter
+  or digit is accepted as part of the name; the same mark followed by a space is not, so a
+  quoted list bullet does not become an invented document name. Each case is disclosed in
   THREE user-facing surfaces: the tool description in `src/server.ts`, `README.md`, and
   `docs/citation-grammar.md`. **If you change the grammar, update all three** - several
   limits now live only in the grammar reference, so updating the first two leaves the suite
@@ -117,8 +127,15 @@ Keep commits scoped to one defect or one feature, with an explicit path list.
   silence.
 - No per-call timeout budget across a whole draft; the SDK's 60s per-request default is
   the only bound, and `verifyCitations` is sequential, so the bound multiplies by the
-  number of distinct documents (disclosed in the README's known limits).
-  `PAGEINDEX_FOLDER_ID` is not implemented.
+  number of distinct documents (disclosed in the README's known limits). Two things bound
+  that multiplication, and neither may be weakened into a verdict: the request's
+  `AbortSignal` is forwarded from the tool handler and checked at the sweep's loop boundary
+  (NOT inside the lookup helpers, whose catch would launder an abort into `unchecked` and
+  let the sweep continue), and `MAX_DISTINCT_DOCUMENTS` in `src/resolver.ts` caps distinct
+  lookups per call at 50, reporting every citation past it `unchecked` - never
+  `unresolved`. The `text` argument itself has NO length cap, deliberately: the parser
+  costs 11 ms for the 82 KiB that already names 5000 documents, so a character limit loose
+  enough for real drafts protects nothing. `PAGEINDEX_FOLDER_ID` is not implemented.
 - The package is NOT published to npm. The README's quick start therefore leads with a
   clone-and-build path and marks the `npx` form as post-publication. Do not present the
   `npx` form as working today.
