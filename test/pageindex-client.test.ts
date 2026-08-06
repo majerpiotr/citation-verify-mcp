@@ -744,6 +744,70 @@ describe("PageindexHttpClient wire contract", () => {
     expect(result).toEqual({ found: true, doc: { name: "report.pdf", pageCount: 12 } });
   });
 
+  // Review finding: `interpretGetDocument` is pure and does not know what was ASKED for, so
+  // any `success: true` body was accepted as confirmation of whatever document the caller
+  // had in mind. The published contract is a literal, case-sensitive file-name match
+  // (README.md, and docs/spike-b-findings.md section 4 measured the backend honouring it:
+  // `Name.pdf` for `name.pdf` comes back NOT_FOUND, not as a success carrying a different
+  // name). So an echo that does not match what was sent means the backend is no longer
+  // behaving the way the whole design rests on - which is precisely a check that could not
+  // run, not a verdict. It throws, so the citation is `unchecked`, and `title` therefore
+  // stays null rather than carrying the name of a document nobody cited.
+  //
+  // This is defense-in-depth against a backend change, not a live bug: no observed response
+  // has ever echoed a different name.
+  describe("a document name the backend did not echo back is unchecked, never resolved", () => {
+    const echo = (returned: string) =>
+      PageindexHttpClient.forTesting({
+        async callTool() {
+          return textResult({ success: true, name: returned, page_count: 12 });
+        },
+      });
+
+    // The case-only difference is the important one: it is the mistake docs/spike-b-findings.md
+    // section 4 found the backend answers with SILENCE (an empty `similar_files`), so it is
+    // also the one where a future fuzzy matcher would do the most damage - a citation to a
+    // document that does not exist under the name written would read as `resolved`.
+    it("throws when the echoed name differs only in the case of its stem", async () => {
+      await expect(echo("report.pdf").getDocument("Report.pdf")).rejects.toThrow();
+    });
+
+    it("throws when the echoed name differs only in the case of its extension", async () => {
+      await expect(echo("report.PDF").getDocument("report.pdf")).rejects.toThrow();
+    });
+
+    it("throws when the echoed name is an unrelated document", async () => {
+      await expect(echo("other.pdf").getDocument("report.pdf")).rejects.toThrow();
+    });
+
+    it("accepts an exact echo", async () => {
+      await expect(echo("report.pdf").getDocument("report.pdf")).resolves.toEqual({
+        found: true,
+        doc: { name: "report.pdf", pageCount: 12 },
+      });
+    });
+
+    // Unicode normalization is a SERIALIZATION difference, not a different document: the
+    // backend found the file under the name that was sent, so the echo coming back in
+    // another normal form says nothing about identity. Comparing raw code units here would
+    // turn every accented name into a permanent `unchecked` on any platform that stores
+    // names decomposed, which is a fail-closed regression the grammar's \p{L} support makes
+    // reachable in practice.
+    it("accepts an echo differing only in Unicode normal form", async () => {
+      // Built with normalize() rather than as two literals: the two forms are
+      // indistinguishable in a source file, so a literal pair would silently be the same
+      // string and this test could not fail.
+      const base = "r\u00e9sum\u00e9.pdf";
+      const nfc = base.normalize("NFC"); // e-acute as one code point
+      const nfd = base.normalize("NFD"); // e + combining acute
+      expect(nfc).not.toBe(nfd);
+      await expect(echo(nfd).getDocument(nfc)).resolves.toEqual({
+        found: true,
+        doc: { name: nfd, pageCount: 12 },
+      });
+    });
+  });
+
   it("calls get_document_structure with argument key doc_name and a 1-based part", async () => {
     const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
     const client = PageindexHttpClient.forTesting({

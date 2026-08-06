@@ -156,6 +156,40 @@ export function interpretGetDocument(res: unknown): DocLookupResult {
   throw new Error(`get_document returned an unrecognized response: ${excerpt(text)}`);
 }
 
+// PURE. Requires the backend to have echoed back the name that was actually asked for.
+//
+// `interpretGetDocument` above cannot do this: it is pure over the RESPONSE and does not know
+// what was requested, so before this guard any `success: true` body confirmed whatever
+// document the caller happened to have in mind. The whole design rests on a literal,
+// case-sensitive file-name match (README.md; docs/spike-b-findings.md section 4 measured the
+// backend honouring it - `Name.pdf` for `name.pdf` comes back NOT_FOUND, never as a success
+// carrying a different name), and `title` is the machine-readable delete-versus-fix signal
+// built on top of that. A backend that started fuzzy-matching would therefore confirm a
+// document nobody cited, and report its real name as the title of a citation that names
+// something else.
+//
+// That is a check that could not run, not a verdict: it THROWS, so the citation becomes
+// `unchecked` and `title` stays null (CLAUDE.md hard rule 4 - never `unresolved`, so nothing
+// is deleted on the strength of a backend behaving unexpectedly).
+//
+// Defense-in-depth, not a live bug: no observed response has ever echoed a different name.
+//
+// Compared after Unicode normalization, deliberately. A normal-form difference is a
+// SERIALIZATION artifact, not a different document - the backend found the file under the
+// name that was sent, so the form the echo comes back in says nothing about identity.
+// Comparing raw code units would make every accented name a permanent `unchecked` wherever
+// names are stored decomposed, and the grammar accepts non-ASCII names (\p{L}), so that is
+// a reachable fail-closed regression rather than a theoretical one. Case is NOT normalized:
+// a case difference is exactly the mistake this guard exists to catch.
+function assertNameEcho(requested: string, returned: string): void {
+  if (requested.normalize("NFC") === returned.normalize("NFC")) return;
+  throw new Error(
+    `get_document was asked for "${requested}" but reported a document named "${returned}"; ` +
+      "names are matched literally and case-sensitively, so this is not a usable answer " +
+      "about the document that was cited",
+  );
+}
+
 // Generous cap on recursion depth while walking a structure tree. No realistic
 // document outline nests anywhere near this deep; it exists purely so a cyclic or
 // pathologically deep tree fails with a diagnosable message instead of a raw
@@ -413,7 +447,11 @@ export class PageindexHttpClient implements DocLookup {
         // (docs/spike-b-findings.md section 4).
         arguments: { doc_name: docName },
       });
-      return interpretGetDocument(res);
+      const result = interpretGetDocument(res);
+      // Inside the try on purpose: a mismatch throws, and this catch is what turns a throw
+      // into `unchecked`. A not-found needs no echo check - it carries no confirmed name.
+      if (result.found) assertNameEcho(docName, result.doc.name);
+      return result;
     } catch (err) {
       this.fail(err);
     }
