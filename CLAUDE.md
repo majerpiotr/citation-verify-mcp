@@ -145,9 +145,14 @@ Keep commits scoped to one defect or one feature, with an explicit path list.
   of `unchecked` entries that looks like an answer. They consult the SIGNAL's state, not the
   error's type, because `PageindexHttpClient` re-throws a sanitized plain `Error` and an
   `AbortError`'s identity does not survive that.
-  The `text` argument itself has NO length cap, deliberately: the parser costs 11 ms for the
-  82 KiB that already names 5000 documents, so a character limit loose enough for real
-  drafts protects nothing. `PAGEINDEX_FOLDER_ID` is not implemented.
+  Third, `MAX_INPUT_CHARS` in `src/server.ts` caps the `text` argument at 1 MiB, enforced by
+  the input SCHEMA so an oversized call is refused before the grammar allocates anything. The
+  reason is MEMORY, not time: parsing is cheap (11 ms for the 82 KiB that already names 5000
+  documents), and that measurement was once used to argue no cap was needed, which does not
+  cover the allocation - `src/grammar.ts` builds several `Uint8Array` masks sized to the input
+  before any lookup runs, at roughly a 14x heap multiplier. `MAX_DISTINCT_DOCUMENTS` cannot
+  substitute for it: that bounds what happens after parsing, and the allocation happens first.
+  `PAGEINDEX_FOLDER_ID` is not implemented.
 - The package is NOT published to npm. The README's quick start therefore leads with a
   clone-and-build path and marks the `npx` form as post-publication. Do not present the
   `npx` form as working today.

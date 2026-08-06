@@ -5,6 +5,22 @@ import { verifyCitations } from "./resolver.js";
 import { SERVER_VERSION } from "./version.js";
 import type { DocLookup } from "./pageindex-client.js";
 
+// Bound on the `text` argument, enforced by the input SCHEMA so validation refuses an oversized
+// call before the grammar allocates anything.
+//
+// The reason is MEMORY, not time. Parsing is genuinely cheap - 82 KiB in 11 ms - and that
+// measurement was once used to argue no cap was needed, which does not cover the allocation:
+// src/grammar.ts builds several `Uint8Array` masks sized to the input BEFORE any lookup happens,
+// measured at roughly a 14x heap multiplier (a 4.8 MiB input costs about 68 MiB). So
+// MAX_DISTINCT_DOCUMENTS cannot help here - it bounds what happens after parsing, and the
+// allocation happens first.
+//
+// 1 MiB is far above any real draft an agent writes and still bounds the worst case to tens of
+// megabytes. A refusal surfaces as an MCP error, which the tool description already tells a
+// consuming agent to read as every citation `unchecked` - never `unresolved` - so the failure
+// direction is the safe one. Exported so the disclosure cannot drift from the real value.
+export const MAX_INPUT_CHARS = 1_048_576;
+
 export function createServer(client: DocLookup): McpServer {
   // SERVER_VERSION, never a literal: package.json is the one source (src/version.ts), so
   // the first `npm version patch` cannot leave this advertising a version it is not.
@@ -151,7 +167,21 @@ export function createServer(client: DocLookup): McpServer {
         "verbatim text - `<document>` plus optional `#p<page-or-range>` and/or a node " +
         "marker (`#n<node-id>`, `&n<node-id>` after a page, or bare `node_id:<id>`) - map " +
         "it back to your draft before acting.",
-      inputSchema: { text: z.string().describe("The agent's draft text to check for citations.") },
+      inputSchema: {
+        text: z
+          .string()
+          .max(
+            MAX_INPUT_CHARS,
+            `text must be at most ${MAX_INPUT_CHARS} characters; split the draft and call once per part`,
+          )
+          // The limit lives on the PARAMETER description, not in the tool description: a caller
+          // that learns a limit only by tripping it has to guess, and the tool description is
+          // already large enough that its size is itself a reviewed cost.
+          .describe(
+            "The agent's draft text to check for citations. At most " +
+              `${MAX_INPUT_CHARS} characters - split a longer draft and call once per part.`,
+          ),
+      },
     },
     // `extra` carries the request's AbortSignal (the SDK's RequestHandlerExtra). Ignoring it -
     // which this handler used to do - meant a host that cancelled or timed out left the sweep

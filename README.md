@@ -538,13 +538,17 @@ Known and carried deliberately.
   surfaces as an MCP error - safe, since every citation is then `unchecked` - and the call now
   stops when that happens instead of working through the rest of the draft, but until it does,
   a slow backend is indistinguishable from a hang.
-- **At most 50 distinct documents are looked up per call.** The `text` argument itself has no
-  length limit, and the parser is cheap - but a draft can name thousands of different documents
-  in well under 100 KiB, and each one costs a sequential lookup. Past the fiftieth distinct
-  name, every further citation comes back `unchecked` with a `suggestion` saying so, never
-  `unresolved`: nothing was checked, so nothing may be deleted. The cap counts distinct names,
-  so one document cited a thousand times costs one lookup and never trips it. Split a draft that
-  genuinely cites more than fifty sources and call the tool once per part.
+- **At most 50 distinct documents are looked up per call.** A draft can name thousands of
+  different documents in well under 100 KiB, and each one costs a sequential lookup. Past the
+  fiftieth distinct name, every further citation comes back `unchecked` with a `suggestion`
+  saying so, never `unresolved`: nothing was checked, so nothing may be deleted. The cap counts
+  distinct names, so one document cited a thousand times costs one lookup and never trips it.
+  Split a draft that genuinely cites more than fifty sources and call the tool once per part.
+- **The `text` argument is capped at 1048576 characters** by the input schema, so an oversized
+  call is refused before anything is parsed. The reason is memory rather than time: parsing is
+  cheap, but the grammar allocates several masks sized to the input before any lookup happens, at
+  roughly a 14x heap multiplier. A refusal arrives as an MCP error, which means every citation is
+  `unchecked` - never `unresolved`. Split a longer draft and call once per part.
 - **`PAGEINDEX_FOLDER_ID` is not implemented.** Nothing scopes a lookup to a folder; every
   lookup resolves against the account's whole corpus. If two documents in the same account
   share a file name, existence still answers correctly but identity does not: the lookup

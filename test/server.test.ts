@@ -14,6 +14,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/server.js";
 import { NO_NEAR_MATCH_SUGGESTION, MAX_DISTINCT_DOCUMENTS } from "../src/resolver.js";
+import { MAX_INPUT_CHARS } from "../src/server.js";
 import type { DocLookup, DocLookupResult } from "../src/pageindex-client.js";
 
 interface FakeConfig {
@@ -103,6 +104,78 @@ describe("createServer verify_citations tool", () => {
     // The sweep must not have gone on to b.pdf or c.pdf after the cancellation landed.
     await new Promise((resolve) => setImmediate(resolve));
     expect(lookedUp).toEqual(["a.pdf"]);
+  });
+
+  // Round-2 review, residual risk: there was no cap on the input at all, and the argument that
+  // settled it is about MEMORY, not time. The grammar allocates several `Uint8Array`s
+  // proportional to the input length BEFORE any lookup happens, so the distinct-document cap
+  // cannot help - measured, a 4.8 MiB input costs about 68 MiB of heap, a ~14x multiplier. The
+  // earlier decision to add no cap was argued from parse TIME, which is genuinely cheap, and
+  // that reasoning simply does not cover the allocation.
+  //
+  // The cap belongs in the input SCHEMA rather than in the handler, so validation refuses the
+  // call before the parser ever allocates. The failure surface is one the tool description
+  // already covers: a call that fails returns an MCP error, and every citation is then
+  // `unchecked`, never `unresolved`.
+  describe("the text argument is size-capped before anything is parsed", () => {
+    function countingClient(lookups: string[]): DocLookup {
+      return {
+        async getDocument(docName) {
+          lookups.push(docName);
+          return { found: true, doc: { name: docName, pageCount: 10 } };
+        },
+        async getNodeIds() {
+          return new Set<string>();
+        },
+      };
+    }
+
+    it("refuses an oversized text without parsing or looking anything up", async () => {
+      const lookups: string[] = [];
+      const mcpClient = await connectedClient(countingClient(lookups));
+      const oversized = `See report.pdf. ${"a".repeat(MAX_INPUT_CHARS)}`;
+
+      const outcome = await mcpClient
+        .callTool({ name: "verify_citations", arguments: { text: oversized } })
+        .then(
+          (res) => (res.isError ? "error-result" : "success"),
+          () => "rejected",
+        );
+
+      // Either surface is acceptable - both are "the call failed", which the description
+      // already tells a consuming agent to read as every citation `unchecked`. What must NOT
+      // happen is a normal result, and no lookup may have been attempted.
+      expect(outcome).not.toBe("success");
+      expect(lookups).toEqual([]);
+    });
+
+    it("accepts a text exactly at the cap", async () => {
+      const lookups: string[] = [];
+      const mcpClient = await connectedClient(countingClient(lookups));
+      const suffix = " See report.pdf.";
+      const atCap = "a".repeat(MAX_INPUT_CHARS - suffix.length) + suffix;
+      expect(atCap.length).toBe(MAX_INPUT_CHARS);
+
+      const res = await mcpClient.callTool({
+        name: "verify_citations",
+        arguments: { text: atCap },
+      });
+
+      expect(res.isError).toBeFalsy();
+      expect(lookups).toEqual(["report.pdf"]);
+    });
+
+    // The limit has to be discoverable from the schema, or a caller learns it only by tripping
+    // it. It goes on the `text` parameter rather than in the tool description, which is already
+    // large enough that its size is itself a reviewed cost.
+    it("publishes the limit and the remedy on the text parameter", async () => {
+      const mcpClient = await connectedClient(fakeClient({}));
+      const tools = await mcpClient.listTools();
+      const tool = tools.tools.find((t) => t.name === "verify_citations");
+      const described = tool?.inputSchema?.properties?.["text"] as { description?: string };
+      expect(described?.description).toMatch(new RegExp(String(MAX_INPUT_CHARS)));
+      expect(described?.description).toMatch(/split|smaller|portion|part/i);
+    });
   });
 
   it("resolves an existing document and reports a fabricated one unresolved", async () => {
@@ -740,6 +813,17 @@ describe("the prose documentation states the load-bearing claims the tool descri
     // And says which way it fails. A cap that produced `unresolved` would make a consuming
     // agent delete work over a budget decision, so the safe direction is the load-bearing half.
     expect(readme).toMatch(/comes? back `unchecked`[\s\S]{0,80}never\s+`unresolved`/i);
+  });
+
+  // The input cap and, more importantly, WHY it exists: an operator who reads it as a
+  // performance guard will raise it, and the thing it actually bounds is heap allocated before
+  // any lookup cap can apply. The number is read from the implementation for the same reason as
+  // above - a stale published figure is worse than none.
+  it("discloses the input size cap and that its reason is memory", () => {
+    expect(readme).toMatch(
+      new RegExp(`\`text\` argument is capped at ${MAX_INPUT_CHARS} characters`, "i"),
+    );
+    expect(readme).toMatch(/reason is memory rather than time/i);
   });
 
   it("discloses in both files that a bare name in a script without word spaces is not extracted", () => {
