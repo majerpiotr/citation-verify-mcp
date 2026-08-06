@@ -787,13 +787,19 @@ describe("PageindexHttpClient wire contract", () => {
       });
     });
 
-    // Unicode normalization is a SERIALIZATION difference, not a different document: the
-    // backend found the file under the name that was sent, so the echo coming back in
-    // another normal form says nothing about identity. Comparing raw code units here would
-    // turn every accented name into a permanent `unchecked` on any platform that stores
-    // names decomposed, which is a fail-closed regression the grammar's \p{L} support makes
-    // reachable in practice.
-    it("accepts an echo differing only in Unicode normal form", async () => {
+    // Round-2 review: normalization was accepted here on the theory that a differing normal
+    // form is a serialization artifact. It is not, given the contract this guard enforces.
+    // Matching is LITERAL (docs/spike-b-findings.md section 4), so a success can only come
+    // back for the exact name that was sent - which means an echo in a different normal form
+    // says the backend did NOT match literally, and that is precisely the fuzzy match this
+    // guard exists to catch. Nothing in the repository observes the backend normalizing
+    // anything, so the lenient reading was an assumption, not a finding.
+    //
+    // The two failure directions are not symmetric either. Raw equality can at worst report a
+    // real document `unchecked` (safe, recoverable, nothing deleted); normalizing can at worst
+    // confirm a document under a name the author never wrote, which is the one outcome the
+    // whole guard is for.
+    it("throws when the echoed name differs only in Unicode normal form", async () => {
       // Built with normalize() rather than as two literals: the two forms are
       // indistinguishable in a source file, so a literal pair would silently be the same
       // string and this test could not fail.
@@ -801,9 +807,16 @@ describe("PageindexHttpClient wire contract", () => {
       const nfc = base.normalize("NFC"); // e-acute as one code point
       const nfd = base.normalize("NFD"); // e + combining acute
       expect(nfc).not.toBe(nfd);
-      await expect(echo(nfd).getDocument(nfc)).resolves.toEqual({
+      await expect(echo(nfd).getDocument(nfc)).rejects.toThrow();
+    });
+
+    // The same name in the same normal form is of course still accepted - the guard must not
+    // become "every non-ASCII name is unchecked".
+    it("accepts an exact echo of a non-ASCII name", async () => {
+      const name = "r\u00e9sum\u00e9.pdf".normalize("NFD");
+      await expect(echo(name).getDocument(name)).resolves.toEqual({
         found: true,
-        doc: { name: nfd, pageCount: 12 },
+        doc: { name, pageCount: 12 },
       });
     });
   });

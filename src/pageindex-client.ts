@@ -174,15 +174,25 @@ export function interpretGetDocument(res: unknown): DocLookupResult {
 //
 // Defense-in-depth, not a live bug: no observed response has ever echoed a different name.
 //
-// Compared after Unicode normalization, deliberately. A normal-form difference is a
-// SERIALIZATION artifact, not a different document - the backend found the file under the
-// name that was sent, so the form the echo comes back in says nothing about identity.
-// Comparing raw code units would make every accented name a permanent `unchecked` wherever
-// names are stored decomposed, and the grammar accepts non-ASCII names (\p{L}), so that is
-// a reachable fail-closed regression rather than a theoretical one. Case is NOT normalized:
-// a case difference is exactly the mistake this guard exists to catch.
+// RAW code-unit equality - no Unicode normalization, no case folding. This briefly normalized
+// to NFC on the theory that a differing normal form is a serialization artifact, which does not
+// survive contact with the contract being enforced: matching is LITERAL, so a success can only
+// come back for the exact name that was sent. An echo in a different normal form therefore says
+// the backend did NOT match literally, which is exactly the fuzzy behaviour this guard exists
+// to catch, and nothing in docs/spike-b-findings.md observes the backend normalizing anything -
+// the lenient reading was an assumption dressed as a finding.
+//
+// The two directions are not symmetric, which settles it. Raw equality can at worst report a
+// real document `unchecked`: safe, visible, nothing deleted, and recoverable. Normalizing can
+// at worst confirm a document under a name the author never wrote, which is the single outcome
+// the guard is for.
+//
+// To loosen this, first OBSERVE the backend against a decomposed name: upload one, request it
+// in the other normal form, and record in docs/spike-b-findings.md whether it is found and what
+// `name` comes back. If it turns out the backend normalizes for matching, that is a published
+// contract change (README's "literal file name") and not a change to this comparison alone.
 function assertNameEcho(requested: string, returned: string): void {
-  if (requested.normalize("NFC") === returned.normalize("NFC")) return;
+  if (requested === returned) return;
   throw new Error(
     `get_document was asked for "${requested}" but reported a document named "${returned}"; ` +
       "names are matched literally and case-sensitively, so this is not a usable answer " +
