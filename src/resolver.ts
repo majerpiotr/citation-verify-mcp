@@ -245,6 +245,13 @@ export async function verifyCitations(
     details.push(await classify(citation, client, docOutcomes, nodeIdSets));
   }
 
+  // Again after the loop, and this one is not redundant: the check above is a BOUNDARY, so a
+  // cancellation arriving while the last (or the only) citation was being classified met no
+  // further boundary and a normal result was returned for a request that had been cancelled.
+  // Round-2 review finding, measured: one citation aborted during its own lookup came back
+  // `resolved`.
+  options.signal?.throwIfAborted();
+
   return {
     total: citations.length,
     resolved: details.filter((d) => d.status === "resolved").length,

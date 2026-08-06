@@ -653,6 +653,51 @@ describe("verifyCitations - an aborted request stops instead of finishing the sw
     expect(outcome).not.toHaveProperty("resolved");
   });
 
+  // Round-2 review: the signal was checked only BEFORE each citation, so a cancellation
+  // arriving while the last (or the only) citation was being classified met no further loop
+  // boundary and the sweep returned a perfectly normal result for a request that had been
+  // cancelled. Measured before the fix: one citation, aborted during its own lookup, returned
+  // `{ status: "resolved" }` instead of rejecting.
+  it("rejects when the signal aborts during the only citation", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const client: DocLookup = {
+      async getDocument(docName) {
+        calls++;
+        controller.abort();
+        return { found: true, doc: { name: docName, pageCount: 10 } };
+      },
+      async getNodeIds() {
+        return new Set<string>();
+      },
+    };
+
+    await expect(
+      verifyCitations("See only.pdf.", client, { signal: controller.signal }),
+    ).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
+
+  it("rejects when the signal aborts during the last of several citations", async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const client: DocLookup = {
+      async getDocument(docName) {
+        calls.push(docName);
+        if (docName === "c.pdf") controller.abort();
+        return { found: true, doc: { name: docName, pageCount: 10 } };
+      },
+      async getNodeIds() {
+        return new Set<string>();
+      },
+    };
+
+    await expect(
+      verifyCitations("See a.pdf and b.pdf and c.pdf.", client, { signal: controller.signal }),
+    ).rejects.toThrow();
+    expect(calls).toEqual(["a.pdf", "b.pdf", "c.pdf"]);
+  });
+
   it("still works with no signal supplied", async () => {
     const { client } = fakeClient({
       documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
