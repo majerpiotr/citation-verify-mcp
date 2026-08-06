@@ -106,6 +106,51 @@ describe("interpretGetDocument", () => {
     expect(() => interpretGetDocument(res)).toThrow();
   });
 
+  // Review finding: the envelope's `isError` used to be read as `res["isError"] === true`,
+  // so ANY other value collapsed to "no error" - and a body carrying `success: true`
+  // alongside a truthy-but-not-boolean `isError` was then read as a positive confirmation,
+  // the exact ambiguity the test above exists to reject. The real SDK client cannot deliver
+  // that shape (CallToolResultSchema declares `isError: z.boolean().optional()`, and
+  // Client.callTool rejects a result that fails it), but `interpretGetDocument` is an
+  // exported function and `PageindexHttpClient.forTesting` takes an arbitrary ToolCaller,
+  // so the guarantee has to hold here rather than being borrowed from a caller. Only
+  // `undefined` and a real boolean are readable; anything else is ambiguous and must throw,
+  // which is what makes the citation `unchecked` (CLAUDE.md hard rule 4).
+  //
+  // The success-body cases are the load-bearing half - they are the ones that used to
+  // return `found: true`. The not-found cases already threw for a different reason (no
+  // recognized branch matched), and are pinned so a later refactor cannot make the
+  // errorCode branch accept a non-boolean flag.
+  describe("a non-boolean isError is ambiguous, never 'no error'", () => {
+    const nonBooleans: [string, unknown][] = [
+      ["the string 'true'", "true"],
+      ["the string 'false'", "false"],
+      ["the number 1", 1],
+      ["the number 0", 0],
+      ["null", null],
+      ["an object", {}],
+    ];
+
+    for (const [label, isError] of nonBooleans) {
+      it(`throws when isError is ${label} alongside a success body`, () => {
+        const res = { content: [{ type: "text", text: JSON.stringify({ success: true, name: "some-doc.pdf", page_count: 56 }) }], isError };
+        expect(() => interpretGetDocument(res)).toThrow();
+      });
+
+      it(`throws when isError is ${label} alongside a NOT_FOUND body`, () => {
+        const res = { content: [{ type: "text", text: JSON.stringify({ errorCode: "NOT_FOUND", similar_files: [] }) }], isError };
+        expect(() => interpretGetDocument(res)).toThrow();
+      });
+    }
+
+    // An ABSENT isError is not ambiguous - it is the ordinary success shape, and the
+    // whole suite above depends on it staying readable.
+    it("still reads a success body when isError is absent entirely", () => {
+      const res = { content: [{ type: "text", text: JSON.stringify({ success: true, name: "some-doc.pdf", page_count: 56 }) }] };
+      expect(interpretGetDocument(res)).toEqual({ found: true, doc: { name: "some-doc.pdf", pageCount: 56 } });
+    });
+  });
+
   // An empty name hands the resolver a title that isn't really a title. Ambiguous, not
   // a usable positive statement about the document.
   it("throws when success is true but name is an empty string", () => {

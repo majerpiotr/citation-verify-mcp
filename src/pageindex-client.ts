@@ -72,7 +72,24 @@ function getResultEnvelope(res: unknown, toolName: string): ResultEnvelope {
   if (!isPlainObject(res)) {
     throw new Error(`${toolName} returned an unrecognized response: ${excerptOf(res)}`);
   }
-  const isError = res["isError"] === true;
+  // Only an absent flag or a real boolean is readable. `res["isError"] === true` used to
+  // stand here, which silently collapsed EVERY other value - `"true"`, `1`, `0`, `null`, an
+  // object - into "no error", so a body carrying `success: true` next to one of them was
+  // read as a positive confirmation that the document exists. That is the same ambiguity
+  // `interpretGetDocument` rejects when both flags are unambiguously set, so it has to be
+  // rejected here too: throw, and the citation becomes `unchecked` (CLAUDE.md hard rule 4).
+  //
+  // The real SDK client cannot produce that shape - CallToolResultSchema declares
+  // `isError: z.boolean().optional()` and Client.callTool rejects a result failing it - but
+  // this function is exported and `forTesting` accepts an arbitrary ToolCaller, so the
+  // guarantee is established here rather than borrowed from a caller who might not exist.
+  const isErrorRaw = res["isError"];
+  if (isErrorRaw !== undefined && typeof isErrorRaw !== "boolean") {
+    throw new Error(
+      `${toolName} returned a non-boolean isError flag, which is ambiguous: ${excerptOf(res)}`,
+    );
+  }
+  const isError = isErrorRaw === true;
   const content = res["content"];
   if (!Array.isArray(content)) {
     throw new Error(`${toolName} returned no content array: ${excerptOf(res)}`);
