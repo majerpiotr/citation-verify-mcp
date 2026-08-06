@@ -170,7 +170,23 @@ type DocOutcome =
   | { kind: "not-found"; suggestion: string | null }
   | { kind: "unchecked" };
 
-export async function verifyCitations(text: string, client: DocLookup): Promise<VerifyResult> {
+export interface VerifyOptions {
+  // The MCP request's own AbortSignal, forwarded by the tool handler (src/server.ts).
+  //
+  // Without it a cancelled call kept running to the end: this function is SEQUENTIAL, each
+  // backend request is bounded only by the SDK's 60-second default, and a draft can name
+  // thousands of distinct documents, so a host that timed out after 60 seconds left the
+  // server working through the rest - spending API quota, on the connection whose credential
+  // carries write capability, for a result nobody would ever read. Optional, so an embedder
+  // calling this directly is unaffected.
+  signal?: AbortSignal;
+}
+
+export async function verifyCitations(
+  text: string,
+  client: DocLookup,
+  options: VerifyOptions = {},
+): Promise<VerifyResult> {
   const citations = extractCitations(text);
   const details: CitationDetail[] = [];
 
@@ -183,6 +199,14 @@ export async function verifyCitations(text: string, client: DocLookup): Promise<
   // Sequential by design (v0 scope: no Promise.all, no parallelism) - a shared docName must
   // see its own already-resolved outcome before the next citation starts its own lookup.
   for (const citation of citations) {
+    // Checked HERE, deliberately outside `classify`. Both lookup helpers below wrap the client
+    // in a try/catch that turns any throw into `unchecked` - the contract that keeps a backend
+    // failure from being reported as `unresolved` - so an abort raised inside one of them would
+    // be laundered into a verdict and the sweep would carry on regardless. Raised at the loop
+    // boundary it propagates, so a cancelled call stops after at most the lookups already in
+    // flight and returns no result at all, which is the honest answer: nothing is waiting for
+    // one.
+    options.signal?.throwIfAborted();
     details.push(await classify(citation, client, docOutcomes, nodeIdSets));
   }
 

@@ -588,3 +588,78 @@ describe("verifyCitations", () => {
     expect(getDocumentCalls).toEqual(["report.pdf", "report.pdf"]);
   });
 });
+
+// Review finding (P2): the MCP request carries its own AbortSignal, and the tool handler
+// ignored it. `verifyCitations` is sequential and each backend request is bounded only by the
+// SDK's 60-second default, so once a host gave up on the call the server kept working through
+// the remaining documents - spending API quota, on the same connection the credential carries
+// write capability on, for a result nobody would ever read. 82 KiB of ordinary text is enough
+// to name 5000 distinct documents, so this is not a corner case.
+describe("verifyCitations - an aborted request stops instead of finishing the sweep", () => {
+  it("makes no lookup at all when the signal is already aborted", async () => {
+    const { client, getDocumentCalls } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      verifyCitations("See report.pdf.", client, { signal: controller.signal }),
+    ).rejects.toThrow();
+    expect(getDocumentCalls).toEqual([]);
+  });
+
+  it("stops before the next document once the signal aborts mid-sweep", async () => {
+    const found = (name: string): DocLookupResult => ({
+      found: true,
+      doc: { name, pageCount: 10 },
+    });
+    const controller = new AbortController();
+    const getDocumentCalls: string[] = [];
+    const client: DocLookup = {
+      async getDocument(docName) {
+        getDocumentCalls.push(docName);
+        // The host gives up while the first lookup is in flight.
+        controller.abort();
+        return found(docName);
+      },
+      async getNodeIds() {
+        return new Set<string>();
+      },
+    };
+
+    await expect(
+      verifyCitations("See a.pdf and b.pdf and c.pdf.", client, { signal: controller.signal }),
+    ).rejects.toThrow();
+    // Exactly one - the one already in flight. Not b.pdf, not c.pdf.
+    expect(getDocumentCalls).toEqual(["a.pdf"]);
+  });
+
+  // The abort must NOT be laundered into a verdict. Both lookup helpers wrap the client in a
+  // try/catch that turns a throw into `unchecked`, so an abort raised inside one of them would
+  // be swallowed and the sweep would carry on - which is the whole failure this closes.
+  it("does not report an aborted sweep as a result at all", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+    });
+    const controller = new AbortController();
+    controller.abort();
+    const outcome = await verifyCitations("See report.pdf.", client, {
+      signal: controller.signal,
+    }).then(
+      (r) => ({ resolved: r }),
+      (e: unknown) => ({ rejected: e }),
+    );
+    expect(outcome).not.toHaveProperty("resolved");
+  });
+
+  it("still works with no signal supplied", async () => {
+    const { client } = fakeClient({
+      documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
+    });
+    await expect(verifyCitations("See report.pdf.", client)).resolves.toMatchObject({
+      total: 1,
+      resolved: 1,
+    });
+  });
+});

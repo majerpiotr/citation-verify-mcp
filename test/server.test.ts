@@ -55,6 +55,56 @@ describe("createServer verify_citations tool", () => {
     expect(schema?.required).toContain("text");
   });
 
+  // Review finding (P2): the handler ignored the request's AbortSignal, so a host that
+  // cancelled or timed out left the server sweeping the remaining documents - sequential
+  // lookups, each bounded only by the SDK's 60-second default - spending API quota on a result
+  // nobody would read. This is the wiring test: it drives a REAL cancellation through the MCP
+  // transport rather than calling verifyCitations directly, because the defect was entirely in
+  // the handler signature and a resolver-level test cannot see it.
+  it("stops looking documents up once the caller cancels the request", async () => {
+    const lookedUp: string[] = [];
+    const controller = new AbortController();
+    let firstLookupSeen: (() => void) | undefined;
+    const firstLookup = new Promise<void>((resolve) => {
+      firstLookupSeen = resolve;
+    });
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const client: DocLookup = {
+      async getDocument(docName) {
+        lookedUp.push(docName);
+        if (lookedUp.length === 1) {
+          firstLookupSeen?.();
+          // Hold the first lookup open until the test has cancelled and the cancellation has
+          // actually been delivered to the server. Nothing here races on a timer.
+          await held;
+        }
+        return { found: true, doc: { name: docName, pageCount: 10 } };
+      },
+      async getNodeIds() {
+        return new Set<string>();
+      },
+    };
+
+    const mcpClient = await connectedClient(client);
+    const call = mcpClient.callTool(
+      { name: "verify_citations", arguments: { text: "See a.pdf and b.pdf and c.pdf." } },
+      undefined,
+      { signal: controller.signal },
+    );
+
+    await firstLookup;
+    controller.abort();
+    await expect(call).rejects.toThrow();
+    release?.();
+    // The sweep must not have gone on to b.pdf or c.pdf after the cancellation landed.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(lookedUp).toEqual(["a.pdf"]);
+  });
+
   it("resolves an existing document and reports a fabricated one unresolved", async () => {
     const mcpClient = await connectedClient(
       fakeClient({

@@ -153,8 +153,13 @@ export function createServer(client: DocLookup): McpServer {
         "it back to your draft before acting.",
       inputSchema: { text: z.string().describe("The agent's draft text to check for citations.") },
     },
-    async ({ text }) => {
-      const result = await verifyCitations(text, client);
+    // `extra` carries the request's AbortSignal (the SDK's RequestHandlerExtra). Ignoring it -
+    // which this handler used to do - meant a host that cancelled or timed out left the sweep
+    // running to the end over a sequential set of 60-second-bounded backend calls. Forwarding
+    // it is the difference between "the host gave up, so stop" and "the host gave up, so keep
+    // billing".
+    async ({ text }, extra) => {
+      const result = await verifyCitations(text, client, { signal: extra.signal });
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   );
