@@ -242,7 +242,7 @@ export async function verifyCitations(
     // flight and returns no result at all, which is the honest answer: nothing is waiting for
     // one.
     options.signal?.throwIfAborted();
-    details.push(await classify(citation, client, docOutcomes, nodeIdSets));
+    details.push(await classify(citation, client, docOutcomes, nodeIdSets, options.signal));
   }
 
   // Again after the loop, and this one is not redundant: the check above is a BOUNDARY, so a
@@ -266,6 +266,7 @@ async function classify(
   client: DocLookup,
   docOutcomes: Map<string, DocOutcome>,
   nodeIdSets: Map<string, Set<string> | null>,
+  signal?: AbortSignal,
 ): Promise<CitationDetail> {
   const { token, docName, pages, nodeId } = citation;
 
@@ -279,7 +280,7 @@ async function classify(
   // into a definite found/not-found, is `unchecked`. `found: false` is a positive miss -
   // `unresolved` - and nothing about page or node can be checked without a real document, so
   // this returns immediately.
-  const docOutcome = await getDocOutcome(docName, client, docOutcomes);
+  const docOutcome = await getDocOutcome(docName, client, docOutcomes, signal);
   if (docOutcome.kind === "over-cap") {
     // `title` stays null for the same reason as the unchecked branch below: nothing was
     // confirmed about this document, not even that it exists.
@@ -331,7 +332,7 @@ async function classify(
   let nodeFailed = false;
   let nodeUnchecked = false;
   if (nodeId !== null) {
-    const ids = await getNodeIdSet(docName, client, nodeIdSets);
+    const ids = await getNodeIdSet(docName, client, nodeIdSets, signal);
     if (ids === null) {
       nodeUnchecked = true;
       notes.push(NODE_UNCHECKED_SUGGESTION);
@@ -376,6 +377,7 @@ async function getDocOutcome(
   docName: string,
   client: DocLookup,
   cache: Map<string, DocOutcome>,
+  signal?: AbortSignal,
 ): Promise<DocOutcome> {
   const cached = cache.get(docName);
   if (cached) return cached;
@@ -388,7 +390,7 @@ async function getDocOutcome(
 
   let outcome: DocOutcome;
   try {
-    const result = await client.getDocument(docName);
+    const result = await client.getDocument(docName, signal);
     outcome = result.found
       ? { kind: "found", doc: result.doc }
       : {
@@ -400,6 +402,16 @@ async function getDocOutcome(
             : NO_NEAR_MATCH_SUGGESTION,
         };
   } catch (err) {
+    // A cancellation is NOT a lookup failure and must not be laundered into one. This catch is
+    // what turns a throw into `unchecked` - the contract that keeps a backend outage from
+    // reading as `unresolved` - so an abort raised inside the lookup would come back out of here
+    // as a verdict, and the cancelled call would return a result full of `unchecked` entries
+    // that looks like an answer. Re-thrown before the log line, too: that line is the only
+    // signal an operator gets for a real outage, so one entry per document every time a host
+    // cancels would bury exactly what it exists to surface. The signal's own state is what is
+    // consulted rather than the error's type, because PageindexHttpClient re-throws a sanitized
+    // plain Error and an AbortError's identity does not survive that.
+    signal?.throwIfAborted();
     // The client's contract: a throw means the check could not run. Never reinterpreted as
     // a positive miss. The error is not discarded: it is the only signal an operator gets
     // for the most common production failure, so it goes to stderr - once per distinct
@@ -415,13 +427,18 @@ async function getNodeIdSet(
   docName: string,
   client: DocLookup,
   cache: Map<string, Set<string> | null>,
+  signal?: AbortSignal,
 ): Promise<Set<string> | null> {
   if (cache.has(docName)) return cache.get(docName) ?? null;
 
   let ids: Set<string> | null;
   try {
-    ids = await client.getNodeIds(docName);
+    ids = await client.getNodeIds(docName, signal);
   } catch (err) {
+    // Same rule as the document path above, and this is the path where it matters most: one
+    // cited node can page an entire outline, so a cancellation is far more likely to land here
+    // than anywhere else.
+    signal?.throwIfAborted();
     // Recorded as a throw, never as "node absent" - and reported to the operator, for the
     // same reason as the document path above. Once per distinct document name.
     logLookupFailure("document structure", docName, err);

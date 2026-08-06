@@ -13,10 +13,17 @@ export type DocLookupResult = { found: true; doc: DocumentInfo } | { found: fals
 
 export interface DocLookup {
   // Resolves to found/not-found. THROWS when the check could not run.
-  getDocument(docName: string): Promise<DocLookupResult>;
+  //
+  // `signal` is the MCP request's own AbortSignal, threaded down from the tool handler. It is
+  // optional so an existing implementation stays valid, but an implementation that ignores it
+  // cannot be cancelled: `getNodeIds` in particular can issue dozens of sequential requests,
+  // and before this parameter existed a cancelled call worked through every one of them. An
+  // implementation that honours it must let the cancellation ESCAPE as a throw - never fold it
+  // into a found/not-found verdict, and never into a partial node-id set (see below).
+  getDocument(docName: string, signal?: AbortSignal): Promise<DocLookupResult>;
   // Every node id in the document's tree, walked recursively across pages.
   // Only called when a node was actually cited. THROWS when the check could not run.
-  getNodeIds(docName: string): Promise<Set<string>>;
+  getNodeIds(docName: string, signal?: AbortSignal): Promise<Set<string>>;
 }
 // CONTRACT for every implementation of DocLookup, not just the one below: the message of
 // an error it throws MUST be free of secrets. The resolver writes that message to stderr
@@ -300,9 +307,19 @@ function parseStructurePage(res: unknown, docName: string): StructurePage {
 export async function accumulateNodeIds(
   docName: string,
   fetchPart: (part: number) => Promise<unknown>,
+  signal?: AbortSignal,
 ): Promise<Set<string>> {
   const ids = new Set<string>();
   for (let part = 1; part <= MAX_STRUCTURE_PARTS; part++) {
+    // This loop is the longest run of sequential backend requests in the server - up to
+    // MAX_STRUCTURE_PARTS of them for ONE cited node, each bounded only by the SDK's 60-second
+    // default. Before this check a cancellation reaching `verifyCitations` stopped the sweep
+    // between citations but did nothing here, so a cancelled call still paged an entire outline
+    // out of the backend; across a full document budget that is thousands of requests nobody is
+    // waiting for. Throwing (rather than returning the ids collected so far) is required for the
+    // same reason as the pagination cap below: a partial set makes a real node look absent and
+    // produces a false `unresolved`.
+    signal?.throwIfAborted();
     const res = await fetchPart(part);
     const page = parseStructurePage(res, docName);
     const pageIds = collectNodeIds(page.structure);
@@ -358,7 +375,17 @@ export function assertSecureBaseUrl(url: URL): void {
 // satisfies this structurally as-is, so nothing about `connect()`'s runtime behaviour
 // changes.
 export interface ToolCaller {
-  callTool(params: { name: string; arguments: Record<string, unknown> }): Promise<unknown>;
+  // The third parameter is the SDK's RequestOptions, which is where an AbortSignal belongs
+  // (node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.d.ts). Only `signal` is
+  // declared here, because it is the only field this module sets. The second parameter exists
+  // solely so the third can be reached: the SDK's `callTool(params, resultSchema, options)`
+  // defaults `resultSchema` when it is passed `undefined`, so forwarding `undefined` there
+  // keeps the SDK's own default rather than replacing it.
+  callTool(
+    params: { name: string; arguments: Record<string, unknown> },
+    resultSchema?: never,
+    options?: { signal?: AbortSignal },
+  ): Promise<unknown>;
 }
 
 // Bound on a rendered lookup failure. The resolver caps its own log line as well; this cap
@@ -448,15 +475,23 @@ export class PageindexHttpClient implements DocLookup {
     throw new Error(this.sanitize(err));
   }
 
-  async getDocument(docName: string): Promise<DocLookupResult> {
+  async getDocument(docName: string, signal?: AbortSignal): Promise<DocLookupResult> {
     try {
-      const res = await this.client.callTool({
-        name: "get_document",
-        // NOTE: the argument is `doc_name` (a case-sensitive file name including
-        // extension), NOT `doc_id` - passing `doc_id` is a validation error
-        // (docs/spike-b-findings.md section 4).
-        arguments: { doc_name: docName },
-      });
+      const res = await this.client.callTool(
+        {
+          name: "get_document",
+          // NOTE: the argument is `doc_name` (a case-sensitive file name including
+          // extension), NOT `doc_id` - passing `doc_id` is a validation error
+          // (docs/spike-b-findings.md section 4).
+          arguments: { doc_name: docName },
+        },
+        // `undefined` keeps the SDK's default result schema - see the ToolCaller comment. The
+        // signal goes to the transport so a request ALREADY on the wire is aborted, not merely
+        // the next one prevented; an in-flight request is otherwise bounded only by the SDK's
+        // 60-second default, which a cancelled call would still have to wait out.
+        undefined,
+        { signal },
+      );
       const result = interpretGetDocument(res);
       // Inside the try on purpose: a mismatch throws, and this catch is what turns a throw
       // into `unchecked`. A not-found needs no echo check - it carries no confirmed name.
@@ -467,15 +502,24 @@ export class PageindexHttpClient implements DocLookup {
     }
   }
 
-  async getNodeIds(docName: string): Promise<Set<string>> {
+  async getNodeIds(docName: string, signal?: AbortSignal): Promise<Set<string>> {
     try {
-      return await accumulateNodeIds(docName, (part) =>
-        this.client.callTool({
-          name: "get_document_structure",
-          // `doc_name`, matching get_document - see the NOTE above. `part` is 1-based
-          // (docs/spike-b-findings.md section 5).
-          arguments: { doc_name: docName, part },
-        }),
+      return await accumulateNodeIds(
+        docName,
+        (part) =>
+          this.client.callTool(
+            {
+              name: "get_document_structure",
+              // `doc_name`, matching get_document - see the NOTE above. `part` is 1-based
+              // (docs/spike-b-findings.md section 5).
+              arguments: { doc_name: docName, part },
+            },
+            undefined,
+            { signal },
+          ),
+        // Passed to the pagination loop as well as to each request: the loop is what must stop
+        // between parts, and the request is what must stop mid-flight.
+        signal,
       );
     } catch (err) {
       this.fail(err);

@@ -866,3 +866,107 @@ describe("PageindexHttpClient wire contract", () => {
     ]);
   });
 });
+
+// Round-2 review: the AbortSignal reached `verifyCitations` and stopped there. A cited node makes
+// `accumulateNodeIds` issue up to MAX_STRUCTURE_PARTS sequential structure requests, so a
+// cancellation landing after part 1 reported `has_more: true` did nothing at all - measured, it
+// went on to fetch all six parts of a six-part outline. Across a full 50-document budget that is
+// up to 2550 backend calls after the caller has already given up.
+//
+// The cancellation must escape as a THROW. It must not become an empty or partial id set, which
+// would make a real node look absent and produce a false `unresolved` - the same reasoning as the
+// pagination cap and the empty-first-part guard above.
+describe("accumulateNodeIds - cancellation stops the pagination", () => {
+  function pagedFetch(parts: number[]): (part: number) => Promise<unknown> {
+    return async (part) => {
+      parts.push(part);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              structure: [{ title: `H${part}`, node_id: `000${part}` }],
+              pagination: { has_more: part < 6 },
+            }),
+          },
+        ],
+      };
+    };
+  }
+
+  it("does not request part 2 when the signal aborts during part 1", async () => {
+    const controller = new AbortController();
+    const parts: number[] = [];
+    const fetch = pagedFetch(parts);
+
+    await expect(
+      accumulateNodeIds(
+        "report.pdf",
+        async (part) => {
+          const res = await fetch(part);
+          if (part === 1) controller.abort();
+          return res;
+        },
+        controller.signal,
+      ),
+    ).rejects.toThrow();
+    expect(parts).toEqual([1]);
+  });
+
+  it("requests nothing at all when the signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const parts: number[] = [];
+
+    await expect(
+      accumulateNodeIds("report.pdf", pagedFetch(parts), controller.signal),
+    ).rejects.toThrow();
+    expect(parts).toEqual([]);
+  });
+
+  it("pages normally when no signal is supplied", async () => {
+    const parts: number[] = [];
+    const ids = await accumulateNodeIds("report.pdf", pagedFetch(parts));
+    expect(parts).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(ids.size).toBe(6);
+  });
+});
+
+// The signal has to reach the transport too, not merely gate the next call: an in-flight request
+// is bounded only by the SDK's 60-second default, so without this a cancelled call still waits
+// out the request already on the wire.
+describe("PageindexHttpClient forwards the signal to the transport", () => {
+  it("passes the signal to callTool for a document lookup", async () => {
+    const controller = new AbortController();
+    const seen: unknown[] = [];
+    const client = PageindexHttpClient.forTesting({
+      async callTool(_params, _resultSchema, options) {
+        seen.push(options?.signal);
+        return textResult({ success: true, name: "report.pdf", page_count: 12 });
+      },
+    });
+
+    await client.getDocument("report.pdf", controller.signal);
+    expect(seen).toEqual([controller.signal]);
+  });
+
+  it("passes the signal to callTool for every structure part", async () => {
+    const controller = new AbortController();
+    const seen: unknown[] = [];
+    const client = PageindexHttpClient.forTesting({
+      async callTool(params, _resultSchema, options) {
+        seen.push(options?.signal);
+        const part = params.arguments["part"];
+        return structureResult({
+          success: true,
+          structure: [{ title: "H", node_id: `000${String(part)}` }],
+          pagination: { has_more: part === 1 },
+        });
+      },
+    });
+
+    await client.getNodeIds("report.pdf", controller.signal);
+    expect(seen).toEqual([controller.signal, controller.signal]);
+  });
+});

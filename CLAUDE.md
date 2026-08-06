@@ -128,14 +128,26 @@ Keep commits scoped to one defect or one feature, with an explicit path list.
 - No per-call timeout budget across a whole draft; the SDK's 60s per-request default is
   the only bound, and `verifyCitations` is sequential, so the bound multiplies by the
   number of distinct documents (disclosed in the README's known limits). Two things bound
-  that multiplication, and neither may be weakened into a verdict: the request's
-  `AbortSignal` is forwarded from the tool handler and checked at the sweep's loop boundary
-  (NOT inside the lookup helpers, whose catch would launder an abort into `unchecked` and
-  let the sweep continue), and `MAX_DISTINCT_DOCUMENTS` in `src/resolver.ts` caps distinct
-  lookups per call at 50, reporting every citation past it `unchecked` - never
-  `unresolved`. The `text` argument itself has NO length cap, deliberately: the parser
-  costs 11 ms for the 82 KiB that already names 5000 documents, so a character limit loose
-  enough for real drafts protects nothing. `PAGEINDEX_FOLDER_ID` is not implemented.
+  that multiplication, and neither may be weakened into a verdict.
+  First, `MAX_DISTINCT_DOCUMENTS` in `src/resolver.ts` caps distinct lookups per call at 50,
+  reporting every citation past it `unchecked` - never `unresolved`.
+  Second, the request's `AbortSignal` is forwarded from the tool handler and checked in FOUR
+  places, each closing a gap the others cannot: before each citation and once AFTER the
+  sweep's loop (without the second, an abort landing on the last or only citation met no
+  boundary and a cancelled request returned a normal result); inside `accumulateNodeIds`
+  before every structure part (one cited node can page a whole outline, so this is where a
+  cancellation is most likely to land - up to 2550 requests across a full budget); and it is
+  passed to `callTool` so a request already on the wire aborts instead of waiting out the
+  SDK's 60s default.
+  Critically, both lookup catches in `src/resolver.ts` re-throw on an aborted signal BEFORE
+  converting a throw into `unchecked` and before logging - otherwise a cancellation raised
+  inside a lookup comes back out as a verdict, and the cancelled call returns a result full
+  of `unchecked` entries that looks like an answer. They consult the SIGNAL's state, not the
+  error's type, because `PageindexHttpClient` re-throws a sanitized plain `Error` and an
+  `AbortError`'s identity does not survive that.
+  The `text` argument itself has NO length cap, deliberately: the parser costs 11 ms for the
+  82 KiB that already names 5000 documents, so a character limit loose enough for real
+  drafts protects nothing. `PAGEINDEX_FOLDER_ID` is not implemented.
 - The package is NOT published to npm. The README's quick start therefore leads with a
   clone-and-build path and marks the `npx` form as post-publication. Do not present the
   `npx` form as working today.

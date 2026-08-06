@@ -698,6 +698,110 @@ describe("verifyCitations - an aborted request stops instead of finishing the sw
     expect(calls).toEqual(["a.pdf", "b.pdf", "c.pdf"]);
   });
 
+  // The dangerous half of threading the signal into the lookups: both lookup helpers wrap the
+  // client in a try/catch that converts a throw into `unchecked`, which is the contract keeping a
+  // backend failure from being reported as `unresolved`. A cancellation raised INSIDE a lookup
+  // would be swallowed by exactly that catch - the sweep would carry on and the cancelled call
+  // would return a result full of `unchecked` verdicts, which is worse than the bug being fixed
+  // because it looks like an answer.
+  it("lets a cancellation raised inside the document lookup escape as a rejection", async () => {
+    const controller = new AbortController();
+    const client: DocLookup = {
+      async getDocument(_docName, signal) {
+        controller.abort();
+        signal?.throwIfAborted();
+        throw new Error("unreachable");
+      },
+      async getNodeIds() {
+        return new Set<string>();
+      },
+    };
+
+    await expect(
+      verifyCitations("See report.pdf.", client, { signal: controller.signal }),
+    ).rejects.toThrow();
+  });
+
+  it("lets a cancellation raised inside the node lookup escape as a rejection", async () => {
+    const controller = new AbortController();
+    const client: DocLookup = {
+      async getDocument(docName) {
+        return { found: true, doc: { name: docName, pageCount: 10 } };
+      },
+      async getNodeIds(_docName, signal) {
+        controller.abort();
+        signal?.throwIfAborted();
+        throw new Error("unreachable");
+      },
+    };
+
+    const result = await verifyCitations("See report.pdf node_id: 0003.", client, {
+      signal: controller.signal,
+    }).then(
+      (r) => ({ resolved: r }),
+      () => ({ rejected: true }),
+    );
+    // NOT a result carrying an `unchecked` node - the cancellation must not read as a verdict.
+    expect(result).toEqual({ rejected: true });
+  });
+
+  // A genuine backend failure still becomes `unchecked` while a signal is present but NOT
+  // aborted. Without this the fix above could be written as "any throw rejects", which would
+  // undo the invariant the catch exists for.
+  it("still reports a real lookup failure as unchecked when the signal is live", async () => {
+    const controller = new AbortController();
+    const { client } = fakeClient({ documents: { "report.pdf": "throw" } });
+
+    await expect(
+      verifyCitations("See report.pdf.", client, { signal: controller.signal }),
+    ).resolves.toMatchObject({ unchecked: ["report.pdf"], unresolved: [] });
+  });
+
+  // A cancellation is not a lookup failure, and it must not be logged as one. That stderr line
+  // is the only signal an operator gets for a real outage (logLookupFailure), so filling it with
+  // one entry per document every time a host cancels buries the thing it exists to surface.
+  it("does not write a lookup-failure line for a cancellation", async () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      lines.push(args.map((a) => String(a)).join(" "));
+    });
+    const controller = new AbortController();
+    const client: DocLookup = {
+      async getDocument(_docName, signal) {
+        controller.abort();
+        signal?.throwIfAborted();
+        throw new Error("unreachable");
+      },
+      async getNodeIds() {
+        return new Set<string>();
+      },
+    };
+
+    await expect(
+      verifyCitations("See report.pdf.", client, { signal: controller.signal }),
+    ).rejects.toThrow();
+    expect(lines).toEqual([]);
+    spy.mockRestore();
+  });
+
+  it("hands the signal to both lookups", async () => {
+    const controller = new AbortController();
+    const seen: (AbortSignal | undefined)[] = [];
+    const client: DocLookup = {
+      async getDocument(docName, signal) {
+        seen.push(signal);
+        return { found: true, doc: { name: docName, pageCount: 10 } };
+      },
+      async getNodeIds(_docName, signal) {
+        seen.push(signal);
+        return new Set(["0003"]);
+      },
+    };
+
+    await verifyCitations("See report.pdf node_id: 0003.", client, { signal: controller.signal });
+    expect(seen).toEqual([controller.signal, controller.signal]);
+  });
+
   it("still works with no signal supplied", async () => {
     const { client } = fakeClient({
       documents: { "report.pdf": { found: true, doc: { name: "report.pdf", pageCount: 10 } } },
