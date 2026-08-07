@@ -826,6 +826,21 @@ describe("the prose documentation states the load-bearing claims the tool descri
     expect(readme).toMatch(/reason is memory rather than time/i);
   });
 
+  // Round-3 review: a code comment claimed cancellation aborted the in-flight HTTP request,
+  // which the installed SDK does not do, and nothing in the suite could catch the overclaim
+  // because the tests only proved the signal reached the callTool API. The honest version is now
+  // published, and pinned here - both halves, because "cancellation stops the server" without
+  // "one request still completes and is billed" is the same overclaim in prose.
+  it("states that cancellation stops the server but not the request already sent", () => {
+    expect(readme).toMatch(/Cancellation stops the server, not the backend/i);
+    expect(readme).toMatch(
+      /does not abort the underlying HTTP request[\s\S]{0,120}completes on[\s\S]{0,40}side and is billed/i,
+    );
+    // And that the notification's effect is UNVERIFIED - an unqualified "the backend is
+    // notified" reads as "the backend stops".
+    expect(readme).toMatch(/cancellation notification[\s\S]{0,80}not been verified/i);
+  });
+
   it("discloses in both files that a bare name in a script without word spaces is not extracted", () => {
     expect(readme).toMatch(/does not separate words with spaces[\s\S]{0,300}quote/i);
     expect(grammarDoc).toMatch(/does not separate words with spaces[\s\S]{0,300}quote/i);

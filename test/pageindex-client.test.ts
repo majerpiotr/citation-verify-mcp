@@ -2,6 +2,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { redactSecret } from "../src/api-key.js";
 import { SERVER_VERSION } from "../src/version.js";
 import {
@@ -968,5 +972,98 @@ describe("PageindexHttpClient forwards the signal to the transport", () => {
 
     await client.getNodeIds("report.pdf", controller.signal);
     expect(seen).toEqual([controller.signal, controller.signal]);
+  });
+});
+
+// Round-3 review: this module used to claim that passing the signal as callTool's third argument
+// aborts "a request ALREADY on the wire". That is false for the installed SDK, and the claim was
+// asserted rather than observed - the existing tests only prove the signal object reaches the
+// callTool API, which cannot guard a statement about the transport.
+//
+// Verified by reading @modelcontextprotocol/sdk 1.30.0: `Protocol.request` registers an abort
+// listener that deletes the response handler, sends `notifications/cancelled`, and rejects - it
+// never forwards `RequestOptions.signal` to `transport.send`. `StreamableHTTPClientTransport.send`
+// destructures only `resumptionToken` and `onresumptiontoken` from its options and builds every
+// fetch with `this._abortController?.signal`, which is aborted only by `close()`. So the
+// underlying HTTP request keeps running and the backend keeps working on it.
+//
+// What the signal DOES buy is pinned below, because the comments and docs now promise exactly
+// this and nothing more. Both properties are observed through the real SDK rather than a fake,
+// since a fake ToolCaller cannot demonstrate either one.
+describe("what an aborted callTool actually guarantees in the installed SDK", () => {
+  // A server whose tool handler never answers on its own, so the only thing that can end the
+  // client's wait is the cancellation.
+  // `started` is what makes this deterministic. Aborting before the request has actually been
+  // dispatched cancels a request the peer never saw, so the peer has nothing to be notified
+  // about - a real ordering, not a flake, and one worth knowing: cancellation only reaches the
+  // peer for a request already sent.
+  async function hangingServer(): Promise<{
+    client: Client;
+    started: Promise<void>;
+    cancelled: Promise<void>;
+  }> {
+    const server = new Server({ name: "probe", version: "0.0.1" }, { capabilities: { tools: {} } });
+    let sawStart: (() => void) | undefined;
+    let sawCancellation: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      sawStart = resolve;
+    });
+    const cancelled = new Promise<void>((resolve) => {
+      sawCancellation = resolve;
+    });
+    server.setRequestHandler(CallToolRequestSchema, async (_req, extra) => {
+      sawStart?.();
+      await new Promise<void>((resolve) => {
+        extra.signal.addEventListener("abort", () => {
+          sawCancellation?.();
+          resolve();
+        });
+      });
+      return { content: [{ type: "text", text: "late" }] };
+    });
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: "probe", version: "0.0.1" });
+    await client.connect(clientTransport);
+    return { client, started, cancelled };
+  }
+
+  // Property 1: the LOCAL wait ends immediately instead of running to the SDK's request timeout.
+  // This is the part of the original claim that was true, and it is the one that matters to this
+  // server: without it the sweep would sit inside a single `await` for a minute per document
+  // before its own abort checks could run at all.
+  it("rejects the pending call at once rather than after the request timeout", async () => {
+    const { client, started } = await hangingServer();
+    const controller = new AbortController();
+
+    const begunAt = Date.now();
+    const call = client.callTool({ name: "x", arguments: {} }, undefined, {
+      signal: controller.signal,
+    });
+    await started;
+    controller.abort();
+    await expect(call).rejects.toThrow();
+    // The SDK's default is 60000 ms. Anything in that neighbourhood would mean the abort did
+    // nothing and the timeout is what ended the wait.
+    expect(Date.now() - begunAt).toBeLessThan(5_000);
+  });
+
+  // Property 2: the peer is TOLD. Whether it acts on that is the peer's business - for the real
+  // backend it is unobserved, which is why no code comment or document may claim the backend
+  // stops working.
+  it("notifies the peer that the request was cancelled", async () => {
+    const { client, started, cancelled } = await hangingServer();
+    const controller = new AbortController();
+
+    const call = client.callTool({ name: "x", arguments: {} }, undefined, {
+      signal: controller.signal,
+    });
+    await started;
+    controller.abort();
+    await expect(call).rejects.toThrow();
+    // Resolves only because the server handler's own signal fired, which only happens if the
+    // cancellation notification arrived.
+    await expect(cancelled).resolves.toBeUndefined();
   });
 });

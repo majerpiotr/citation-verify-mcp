@@ -485,10 +485,24 @@ export class PageindexHttpClient implements DocLookup {
           // (docs/spike-b-findings.md section 4).
           arguments: { doc_name: docName },
         },
-        // `undefined` keeps the SDK's default result schema - see the ToolCaller comment. The
-        // signal goes to the transport so a request ALREADY on the wire is aborted, not merely
-        // the next one prevented; an in-flight request is otherwise bounded only by the SDK's
-        // 60-second default, which a cancelled call would still have to wait out.
+        // `undefined` keeps the SDK's default result schema - see the ToolCaller comment.
+        //
+        // What passing the signal here buys, stated exactly, because this comment previously
+        // claimed something the SDK does not do (round-3 review): the pending call REJECTS AT
+        // ONCE instead of waiting up to the SDK's 60-second request timeout, and the peer is
+        // sent an MCP `notifications/cancelled`. Both are observed through the real SDK and
+        // pinned in test/pageindex-client.test.ts, "what an aborted callTool actually
+        // guarantees in the installed SDK".
+        //
+        // What it does NOT do: abort the underlying HTTP request. `Protocol.request` never
+        // forwards `RequestOptions.signal` to `transport.send`, and
+        // `StreamableHTTPClientTransport` builds every fetch with its own transport-wide
+        // controller, aborted only by `close()`. So the request already sent stays on the wire
+        // and the backend keeps working on it; whether it honours the cancellation notification
+        // is the backend's business and is unobserved for PageIndex. The residual cost is
+        // therefore ONE in-flight request per cancellation - the sweep's remaining lookups,
+        // which is where the thousands-of-calls problem lived, are stopped by the checks in
+        // `accumulateNodeIds` and in the resolver.
         undefined,
         { signal },
       );
@@ -517,8 +531,10 @@ export class PageindexHttpClient implements DocLookup {
             undefined,
             { signal },
           ),
-        // Passed to the pagination loop as well as to each request: the loop is what must stop
-        // between parts, and the request is what must stop mid-flight.
+        // Passed to the pagination loop as well as to each request, and the loop is the half
+        // that actually stops work: it prevents every LATER part from being requested at all.
+        // The per-request signal only ends the local wait and notifies the peer (see the
+        // get_document comment above); it does not abort a request already sent.
         signal,
       );
     } catch (err) {

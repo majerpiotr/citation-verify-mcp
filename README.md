@@ -535,9 +535,15 @@ Known and carried deliberately.
   distinct document costing one existence lookup plus (if a node is cited) one or more
   structure requests. A draft citing many distinct documents can take many multiples of 60
   seconds in the worst case. In practice the host's own tool-call timeout fires first, which
-  surfaces as an MCP error - safe, since every citation is then `unchecked` - and the call now
+  surfaces as an MCP error - safe, since every citation is then `unchecked` - and the server
   stops when that happens instead of working through the rest of the draft, but until it does,
   a slow backend is indistinguishable from a hang.
+- **Cancellation stops the server, not the backend.** When the host cancels or times out, no
+  further lookup or outline page is requested and the call returns nothing. The one request
+  already sent is a different matter: the MCP SDK does not abort the underlying HTTP request, so
+  that request completes on PageIndex's side and is billed. The backend is also sent an MCP
+  cancellation notification, but whether it acts on it has not been verified. So expect at most
+  one wasted request per cancellation, not zero.
 - **At most 50 distinct documents are looked up per call.** A draft can name thousands of
   different documents in well under 100 KiB, and each one costs a sequential lookup. Past the
   fiftieth distinct name, every further citation comes back `unchecked` with a `suggestion`

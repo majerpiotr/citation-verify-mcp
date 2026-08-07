@@ -137,8 +137,17 @@ Keep commits scoped to one defect or one feature, with an explicit path list.
   boundary and a cancelled request returned a normal result); inside `accumulateNodeIds`
   before every structure part (one cited node can page a whole outline, so this is where a
   cancellation is most likely to land - up to 2550 requests across a full budget); and it is
-  passed to `callTool` so a request already on the wire aborts instead of waiting out the
-  SDK's 60s default.
+  passed to `callTool`.
+  Be precise about that last one; an earlier comment was not, and a review caught it. Passing
+  the signal to `callTool` makes the pending call REJECT AT ONCE rather than waiting up to the
+  SDK's 60s request timeout, and sends the peer an MCP `notifications/cancelled`. It does NOT
+  abort the underlying HTTP request: `Protocol.request` never forwards `RequestOptions.signal`
+  to `transport.send`, and `StreamableHTTPClientTransport` builds every fetch with its own
+  transport-wide controller that only `close()` aborts. So one in-flight request per
+  cancellation still completes on the backend, and whether the backend honours the
+  notification is unobserved. Both guarantees that DO hold are pinned against the real SDK in
+  test/pageindex-client.test.ts ("what an aborted callTool actually guarantees"). Do not
+  restore any claim that the HTTP request is aborted without a test that proves it.
   Critically, both lookup catches in `src/resolver.ts` re-throw on an aborted signal BEFORE
   converting a throw into `unchecked` and before logging - otherwise a cancellation raised
   inside a lookup comes back out as a verdict, and the cancelled call returns a result full
