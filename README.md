@@ -550,6 +550,17 @@ Known and carried deliberately.
   saying so, never `unresolved`: nothing was checked, so nothing may be deleted. The cap counts
   distinct names, so one document cited a thousand times costs one lookup and never trips it.
   Split a draft that genuinely cites more than fifty sources and call the tool once per part.
+- **At most 2000 citations are reported per call.** The input cap below bounds what a call can
+  parse and the lookup cap above bounds what it will check, but neither bounds what it says
+  back: a 1 MiB draft can name tens of thousands of citations, each carrying a
+  several-hundred-character `suggestion`, which measured at a 37x JSON result with no backend
+  request made at all. Past the two-thousandth citation the rest are simply not reported, and
+  `truncated` says how many - so `details` plus `truncated` is always `total`, while
+  `resolved`, `unresolved` and `unchecked` cover only what was reported. A truncated citation
+  was never checked against anything, so treat it as `unchecked` and never as `unresolved`;
+  split the draft and call once per part to have those citations checked. Every realistic
+  draft stays whole: a full 1 MiB draft citing something every 500 characters is still under
+  the cap.
 - **The `text` argument is capped at 1048576 characters** by the input schema, so an oversized
   call is refused before anything is parsed. The reason is memory rather than time: parsing is
   cheap, but the grammar allocates several masks sized to the input before any lookup happens, at

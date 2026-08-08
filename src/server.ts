@@ -1,7 +1,7 @@
 // src/server.ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { verifyCitations } from "./resolver.js";
+import { verifyCitations, MAX_REPORTED_CITATIONS } from "./resolver.js";
 import { SERVER_VERSION } from "./version.js";
 import type { DocLookup } from "./pageindex-client.js";
 
@@ -44,7 +44,14 @@ export function createServer(client: DocLookup): McpServer {
         "exists, whatever the status, so `title` - not `suggestion` - is what " +
         "distinguishes the two; `unchecked` - an ARRAY of " +
         "tokens the check could not run for (e.g. a timeout or the backend being down); " +
-        "`details` - per citation `{ token, status, title, suggestion }`. `suggestion` " +
+        "`details` - per citation `{ token, status, title, suggestion }`; " +
+        `\`truncated\` - a COUNT of citations found but NOT reported, because at most ${MAX_REPORTED_CITATIONS} ` +
+        "citations are reported per call. It is 0 in an ordinary call, and it is the only " +
+        "thing that makes the arrays stop summing to `total`: `details` plus `truncated` is " +
+        "always `total`. A truncated citation was never checked against anything, so treat " +
+        "every one of them as `unchecked` - never as `unresolved` - and call again with a " +
+        "smaller portion of the draft to have them checked. " +
+        "`suggestion` " +
         "may carry a near-miss document name, an explanation of a miss that WAS checked " +
         "(the real page count, or a fixed case-sensitivity reminder when a document is " +
         "absent and the backend offered no near name), or an explanation of what could " +

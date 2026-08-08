@@ -13,7 +13,11 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/server.js";
-import { NO_NEAR_MATCH_SUGGESTION, MAX_DISTINCT_DOCUMENTS } from "../src/resolver.js";
+import {
+  NO_NEAR_MATCH_SUGGESTION,
+  MAX_DISTINCT_DOCUMENTS,
+  MAX_REPORTED_CITATIONS,
+} from "../src/resolver.js";
 import { MAX_INPUT_CHARS } from "../src/server.js";
 import type { DocLookup, DocLookupResult } from "../src/pageindex-client.js";
 
@@ -305,6 +309,23 @@ describe("createServer verify_citations tool", () => {
       /unchecked`?\s*-\s*an ARRAY of tokens the check could not run for \(e\.g\. a timeout or the backend being down\)/i,
     );
     expect(description).toMatch(/`details`\s*-\s*per citation `\{ token, status, title, suggestion \}`/);
+    // `truncated` is the only field that can make the arrays stop summing to `total`, so a
+    // consuming agent that does not read it treats a partial answer as a whole one. Pinned
+    // with the number and with the safe direction, for the same reason as every other cap
+    // here: a citation nobody looked at must never read as one that was found missing.
+    expect(description).toMatch(
+      new RegExp(
+        `\`truncated\` - a COUNT of citations found but NOT reported, because at most ${MAX_REPORTED_CITATIONS} citations are reported per call`,
+        "i",
+      ),
+    );
+    // The arithmetic, so a reader can tell a truncated result from a complete one at all.
+    expect(description).toMatch(/`details` plus `truncated` is always `total`/i);
+    // And the safe direction, which is the half that keeps a consuming agent from deleting
+    // work over a budget decision.
+    expect(description).toMatch(
+      /truncated citation was never checked against anything, so treat every one of them as `unchecked` - never as `unresolved`/i,
+    );
     // `total` counts DISTINCT canonical TOKENS, not documents - re-citing the same token
     // collapses, but the same document with two different pages counts twice (Minor fix:
     // the previous wording claimed same-document collapse, which is false). The `total` -
@@ -824,6 +845,19 @@ describe("the prose documentation states the load-bearing claims the tool descri
       new RegExp(`\`text\` argument is capped at ${MAX_INPUT_CHARS} characters`, "i"),
     );
     expect(readme).toMatch(/reason is memory rather than time/i);
+  });
+
+  // The report cap is the only place a citation the grammar DID recognize is absent from the
+  // result, so an operator who does not know about it reads a complete-looking answer that
+  // silently covers part of the draft. Both halves matter: the number, read from the
+  // implementation so a stale figure cannot ship, and what `truncated` means - without it the
+  // absence is invisible and `total` looks like it was fully answered.
+  it("discloses the per-call report cap, with the real number and the field that reveals it", () => {
+    expect(readme).toMatch(
+      new RegExp(`at most ${MAX_REPORTED_CITATIONS} citations are reported per call`, "i"),
+    );
+    expect(readme).toMatch(/`details` plus `truncated` is always `total`/i);
+    expect(readme).toMatch(/treat it as `unchecked` and never as `unresolved`/i);
   });
 
   // Round-3 review: a code comment claimed cancellation aborted the in-flight HTTP request,

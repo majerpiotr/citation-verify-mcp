@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   verifyCitations,
   MAX_DISTINCT_DOCUMENTS,
+  MAX_REPORTED_CITATIONS,
   DOC_CAP_SUGGESTION,
   NO_NEAR_MATCH_SUGGESTION,
 } from "../src/resolver.js";
@@ -70,7 +71,7 @@ describe("verifyCitations", () => {
   it("returns an empty verdict for text with no citations", async () => {
     const { client } = fakeClient({});
     const r = await verifyCitations("plain prose with no citations at all.", client);
-    expect(r).toEqual({ total: 0, resolved: 0, unresolved: [], unchecked: [], details: [] });
+    expect(r).toEqual({ total: 0, resolved: 0, unresolved: [], unchecked: [], details: [], truncated: 0 });
   });
 
   it("resolves a document that exists", async () => {
@@ -985,5 +986,126 @@ describe("verifyCitations - the number of distinct documents per call is capped"
     expect(calls.length).toBe(MAX_DISTINCT_DOCUMENTS);
     expect(result.resolved).toBe(MAX_DISTINCT_DOCUMENTS);
     expect(result.unchecked).toEqual([]);
+  });
+});
+
+// MAX_DISTINCT_DOCUMENTS bounds the WORK a call does; nothing bounded what it SAYS. The R3
+// review measured a schema-valid 1 MiB input of repeated bare node ids producing a ~37x JSON
+// result with ZERO backend calls: every citation past the fiftieth distinct document gets the
+// same several-hundred-character explanation, and JSON repeats that string per entry however
+// many entries there are. Cheap for the caller, expensive for the host that has to buffer the
+// result.
+describe("verifyCitations - the reported citation count is bounded", () => {
+  const noDocuments: DocLookup = {
+    async getDocument(): Promise<DocLookupResult> {
+      return { found: false, similar: [] };
+    },
+    async getNodeIds() {
+      return new Set<string>();
+    },
+  };
+
+  // Bare node ids: unverifiable by construction, so they touch no backend at all. This is the
+  // review's own worst case - the cap has to hold where MAX_DISTINCT_DOCUMENTS never engages.
+  function bareNodeIds(count: number): string {
+    return Array.from({ length: count }, (_, i) => `node_id: z${i}`).join(" ");
+  }
+
+  it("reports no more citations than the cap allows", async () => {
+    const result = await verifyCitations(bareNodeIds(MAX_REPORTED_CITATIONS + 25), noDocuments);
+
+    expect(result.details.length).toBe(MAX_REPORTED_CITATIONS);
+    expect(result.unresolved.length + result.unchecked.length).toBe(MAX_REPORTED_CITATIONS);
+  });
+
+  // `total` keeps counting what the draft actually contains, so a caller can see the scale of
+  // what it sent; `truncated` is the count that went unreported. Reporting a smaller `total`
+  // would hide the truncation behind a number that looks like a complete answer.
+  it("keeps total honest and says how many citations went unreported", async () => {
+    const result = await verifyCitations(bareNodeIds(MAX_REPORTED_CITATIONS + 25), noDocuments);
+
+    expect(result.total).toBe(MAX_REPORTED_CITATIONS + 25);
+    expect(result.truncated).toBe(25);
+    expect(result.details.length + result.truncated).toBe(result.total);
+  });
+
+  it("reports nothing truncated for an ordinary draft", async () => {
+    const result = await verifyCitations("See report.pdf p.3 and methods.pdf p.4.", noDocuments);
+
+    expect(result.truncated).toBe(0);
+    expect(result.details.length).toBe(result.total);
+  });
+
+  it("reports every citation when the draft sits exactly on the cap", async () => {
+    const result = await verifyCitations(bareNodeIds(MAX_REPORTED_CITATIONS), noDocuments);
+
+    expect(result.truncated).toBe(0);
+    expect(result.details.length).toBe(MAX_REPORTED_CITATIONS);
+  });
+
+  // The load-bearing consequence. A truncated citation was never checked against anything, so
+  // it must not reach a consuming agent as a positive miss - the same rule the document cap
+  // obeys (CLAUDE.md hard rule 4). Here the citations are all real names the backend denies,
+  // so without the cap every one of them would be `unresolved`.
+  it("never reports a truncated citation as unresolved", async () => {
+    const many = Array.from({ length: MAX_REPORTED_CITATIONS + 25 }, (_, i) => `See d${i}.pdf.`).join(" ");
+    const result = await verifyCitations(many, noDocuments);
+
+    expect(result.total).toBe(MAX_REPORTED_CITATIONS + 25);
+    expect(result.truncated).toBe(25);
+    expect(result.unresolved.length + result.unchecked.length).toBe(MAX_REPORTED_CITATIONS);
+  });
+
+  // The measurement the cap exists for. The input is the schema's own limit, so this is the
+  // worst case a call can legally reach; before the cap it rendered tens of megabytes.
+  it("bounds the serialized result for a schema-valid worst-case input", async () => {
+    // Distinct ids on purpose: identical citations collapse to one, so a repeated token would
+    // measure the dedup rather than the cap.
+    const parts: string[] = [];
+    let length = 0;
+    for (let i = 0; length < 1_048_576; i++) {
+      const part = `node_id: z${i} `;
+      parts.push(part);
+      length += part.length;
+    }
+    const text = parts.join("").slice(0, 1_048_576);
+    const result = await verifyCitations(text, noDocuments);
+    const bytes = JSON.stringify(result).length;
+
+    expect(result.total).toBeGreaterThan(MAX_REPORTED_CITATIONS);
+    expect(bytes).toBeLessThan(4 * 1_048_576);
+  });
+});
+
+// The second unbounded channel the same review found: a suggestion that echoes a value taken
+// from the DRAFT rather than from the backend. Same rule as the near-miss name, and the echo
+// is worth even less here, because `token` already carries the id verbatim.
+describe("verifyCitations - an echoed node id is bounded", () => {
+  function docWithNodes(ids: string[]): DocLookup {
+    return {
+      async getDocument(docName): Promise<DocLookupResult> {
+        return { found: true, doc: { name: docName, pageCount: 10 } };
+      },
+      async getNodeIds() {
+        return new Set(ids);
+      },
+    };
+  }
+
+  it("quotes an ordinary absent node id", async () => {
+    const result = await verifyCitations("See report.pdf node_id: 0042.", docWithNodes(["0000"]));
+
+    expect(result.details[0]?.status).toBe("unresolved");
+    expect(result.details[0]?.suggestion).toContain('"0042"');
+  });
+
+  it("does not echo an absurdly long node id back to a model", async () => {
+    const huge = "9".repeat(500_000);
+    const result = await verifyCitations(`See report.pdf node_id: ${huge}.`, docWithNodes(["0000"]));
+    const suggestion = result.details[0]?.suggestion ?? "";
+
+    expect(result.details[0]?.status).toBe("unresolved");
+    expect(suggestion).not.toContain(huge);
+    expect(suggestion.length).toBeLessThan(400);
   });
 });

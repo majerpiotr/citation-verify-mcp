@@ -28,11 +28,21 @@ export interface CitationDetail {
 }
 
 export interface VerifyResult {
+  // Every citation of a recognized shape the draft contains, whether or not it was reported
+  // below. It stays the honest count of what was SENT even when the cap trims the report, so a
+  // caller can see the scale of what it asked about rather than a smaller number that looks
+  // like a complete answer.
   total: number;
   resolved: number;
   unresolved: string[];
   unchecked: string[];
   details: CitationDetail[];
+  // How many of `total` went unreported because the call hit MAX_REPORTED_CITATIONS. 0 in every
+  // ordinary call, and the one place the arrays below stop summing to `total`:
+  // `resolved + unresolved.length + unchecked.length === total - truncated`, and
+  // `details.length + truncated === total`. A truncated citation was never checked against
+  // anything, so it is absent rather than reported as a miss (CLAUDE.md hard rule 4).
+  truncated: number;
 }
 
 // An identifier that resolves to no document (`docName: null`) is unverifiable by
@@ -131,6 +141,31 @@ export const DOC_CAP_SUGGESTION =
   `of distinct documents it will check in one go (${MAX_DISTINCT_DOCUMENTS}). That is NOT ` +
   "evidence that the document is missing, so do not delete this citation. Check the remaining " +
   "citations by calling the tool again with a smaller portion of the draft.";
+
+// Bound on how many citations one call will REPORT.
+//
+// MAX_DISTINCT_DOCUMENTS above bounds the WORK a call does; nothing bounded what it says back,
+// and the two are not the same channel. The R3 review measured a schema-valid 1 MiB input of
+// repeated bare node ids producing a ~37x JSON result - 96,335 citations, 36.9 MB - in
+// milliseconds and with ZERO backend calls, so neither the document cap nor the abort checks
+// ever engaged. The cost is the per-citation explanation: every citation past the fiftieth
+// distinct document carries the same several-hundred-character string, and JSON repeats that
+// string once per entry however many entries there are. Sharing the constant does not help;
+// only reporting fewer entries does.
+//
+// The failure is availability, not a wrong verdict: it is cheap for the caller and expensive
+// for the host that has to buffer the result. Truncating rather than refusing the whole call is
+// the graceful direction - a draft that genuinely cites more than this is far outside the
+// profile the tool was built for, but one that sits just over it still gets most of its answer.
+//
+// The number is chosen against the input schema's own 1 MiB cap (MAX_INPUT_CHARS in
+// src/server.ts): at this many entries the worst case serializes to roughly one megabyte rather
+// than tens, which is the same order as the input that produced it, while every realistic draft
+// stays whole - a 1 MiB draft citing something every 500 characters is already under it.
+//
+// Exported so a test cannot drift from the real value, and so the disclosures can be checked
+// against it.
+export const MAX_REPORTED_CITATIONS = 2000;
 
 // Bound on one diagnostic line written to stderr. An MCP host captures this server's
 // stderr into its log files, so a huge response body must not flood them.
@@ -241,8 +276,31 @@ function pageOutOfRangeSuggestion(pageCount: number): string {
   return `This document has ${pageCount} page${pageCount === 1 ? "" : "s"}; the cited page is outside that range.`;
 }
 
+// Bound on an echoed node id, and the same argument as MAX_NEAR_MATCH_CHARS with one addition
+// that makes refusing free: `token` already carries the id verbatim, so this echo is a
+// convenience, not the only copy. Observed ids are four-character per-document ordinals
+// (docs/spike-b-findings.md section 6), so 80 is generous by more than an order of magnitude.
+const MAX_NODE_ID_ECHO_CHARS = 80;
+
+const NODE_ABSENT_SUGGESTION =
+  "The cited node was not found in this document's structure. Its id is not repeated here " +
+  "because it is too long to quote usefully; read it from `token`.";
+
+// The second untrusted value this file quotes into a model-facing string, and the only one that
+// comes from the DRAFT rather than the backend. The R3 review measured a 500 KB node id echoed
+// back verbatim, turning one citation into a 1.5 MB result; the grammar runs a node id to the
+// first boundary character, so its length is bounded by the input and by nothing else.
+//
+// Same shape of answer as nearMatchSuggestion: flatten it, then make it earn the quotation
+// marks, and fall back to a static string rather than quote a truncated one. The VERDICT is
+// untouched either way - the node was positively absent from a real document's outline, so the
+// token stays `unresolved` and `title` keeps the document's real name.
 function nodeAbsentSuggestion(nodeId: string): string {
-  return `Node "${nodeId}" was not found in this document's structure.`;
+  const id = flattenToOneLine(nodeId);
+  if (id.length === 0 || id.length > MAX_NODE_ID_ECHO_CHARS || id.includes('"')) {
+    return NODE_ABSENT_SUGGESTION;
+  }
+  return `Node "${id}" was not found in this document's structure.`;
 }
 
 // Outcome of resolving a document name, memoized per call (see the per-call maps in
@@ -277,6 +335,12 @@ export async function verifyCitations(
   options: VerifyOptions = {},
 ): Promise<VerifyResult> {
   const citations = extractCitations(text);
+  // Applied before any classification, so the citations past the cap cost neither a lookup nor
+  // a line of output. They are simply absent from the report - deliberately NOT reported as
+  // `unchecked`, which would defeat the cap: the size problem IS the per-entry explanation, and
+  // an `unchecked` entry carries one. `truncated` below is what keeps that absence visible.
+  const reported =
+    citations.length > MAX_REPORTED_CITATIONS ? citations.slice(0, MAX_REPORTED_CITATIONS) : citations;
   const details: CitationDetail[] = [];
 
   // Per-call memoization ONLY. Both maps are created fresh for this call and discarded when
@@ -287,7 +351,7 @@ export async function verifyCitations(
 
   // Sequential by design (v0 scope: no Promise.all, no parallelism) - a shared docName must
   // see its own already-resolved outcome before the next citation starts its own lookup.
-  for (const citation of citations) {
+  for (const citation of reported) {
     // Checked HERE, deliberately outside `classify`. Both lookup helpers below wrap the client
     // in a try/catch that turns any throw into `unchecked` - the contract that keeps a backend
     // failure from being reported as `unresolved` - so an abort raised inside one of them would
@@ -312,6 +376,7 @@ export async function verifyCitations(
     unresolved: details.filter((d) => d.status === "unresolved").map((d) => d.token),
     unchecked: details.filter((d) => d.status === "unchecked").map((d) => d.token),
     details,
+    truncated: citations.length - reported.length,
   };
 }
 
