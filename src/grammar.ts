@@ -366,15 +366,59 @@ const RE_URL_RUN_CHAR = /[\p{L}\p{M}\p{N}\-._~:\/?#\[\]@!$&'()*+,;=%]/u;
 // set it if "://" ends right here) or is broken by a non-URL character (answer 0). ":" and
 // "/" are themselves URL characters, so a "://" is always wholly inside the run it marks.
 // Texts with no "://" anywhere - the overwhelming majority - skip the pass entirely.
+// The character at `i`, BOTH halves of a surrogate pair included.
+//
+// Round-3 review (P0-4, P1-2): the two hand-written scans in this file - the URL run below
+// and pageOwnerFollows - used to read one UTF-16 CODE UNIT at a time. Every character class
+// in this file is a \p{...} class, and a property class tested against one half of a
+// surrogate pair matches NOTHING: an astral letter read that way is not a letter, not a
+// boundary, not decoration, not whitespace - it silently becomes "a character no rule
+// covers", and both scans have a fall-through branch for that. So a CJK extension
+// ideograph, a mathematical letter or an emoji inside a URL broke the URL run and
+// un-suppressed the URL's own path segment as a citable document ("unresolved" with
+// `title: null`, i.e. delete this valid external reference), and the same character inside
+// a page phrase's connecting words made the page bind to the document on its LEFT
+// ("unresolved" with a non-null title on a correct citation). Both are the deletion
+// direction CLAUDE.md hard rule 4 exists to prevent, reached through the same one-line
+// assumption in two places.
+//
+// The regex passes were never affected: every pattern here carries the `u` flag, which makes
+// the engine iterate code points already. Only the hand-written loops disagreed with them.
+//
+// Returns a one-unit string for the overwhelmingly common BMP case - `text[i]`, exactly what
+// the loops indexed before, so the hot path allocates no more than it did - and slices only
+// for a genuine surrogate pair. An unpaired surrogate is returned alone: it is not a
+// character any rule accepts, which is the same answer as before and the safe one.
+function wholeCharAt(text: string, i: number): string {
+  const unit = text.charCodeAt(i);
+  if (unit >= 0xd800 && unit <= 0xdbff) {
+    const low = text.charCodeAt(i + 1);
+    if (low >= 0xdc00 && low <= 0xdfff) return text.slice(i, i + 2);
+  }
+  return text[i];
+}
+
 function urlSchemeFlags(text: string): Uint8Array {
   const flags = new Uint8Array(text.length + 1);
   if (!text.includes("://")) return flags;
-  for (let i = 1; i <= text.length; i++) {
-    const ch = text[i - 1];
+  for (let i = 0; i < text.length; ) {
+    const ch = wholeCharAt(text, i);
+    const next = i + ch.length;
     // Non-global regex: `.test` carries no lastIndex state, so this is safe to call in a loop.
-    if (!RE_URL_RUN_CHAR.test(ch)) continue; // run broken: flags[i] stays 0
-    const schemeEndsHere = ch === "/" && text[i - 2] === "/" && text[i - 3] === ":";
-    flags[i] = flags[i - 1] === 1 || schemeEndsHere ? 1 : 0;
+    if (RE_URL_RUN_CHAR.test(ch)) {
+      const schemeEndsHere = ch === "/" && text[i - 1] === "/" && text[i - 2] === ":";
+      // `flags[i]` is the previous character's answer: the recurrence reads the position
+      // BEFORE this character, which is where the previous iteration wrote.
+      const inRun = flags[i] === 1 || schemeEndsHere ? 1 : 0;
+      // `flags` stays indexed by UTF-16 offset, because isUrlPrefixed is called with a match
+      // start and that is a UTF-16 offset. A two-unit character therefore has to set BOTH of
+      // its positions to one value: the second is what the next iteration reads, and the
+      // first must agree with it rather than keep a stale 0 that no longer describes any run.
+      if (next > i + 1) flags[i + 1] = inRun;
+      flags[next] = inRun;
+    }
+    // Run broken (or an unpaired surrogate): both positions stay 0.
+    i = next;
   }
   return flags;
 }
@@ -498,14 +542,17 @@ function pageOwnerFollows(text: string, docStarts: Uint8Array, matchEnd: number)
   let words = 0;
   while (i < text.length) {
     if (docStarts[i] === 1) return true;
-    const ch = text[i];
+    // Whole characters, not code units - see wholeCharAt. Every class tested below is a
+    // \p{...} class, and half a surrogate pair matches none of them, so an astral letter used
+    // to fall straight through to the final branch and bind the page LEFT.
+    const ch = wholeCharAt(text, i);
     if (LINE_BREAKS.has(ch)) {
       if (words === 0) return false; // the owner phrase must start on the page's own line
-      i++;
+      i += ch.length;
       continue;
     }
     if (RE_OWNER_SPACE.test(ch) || RE_OWNER_DECORATION.test(ch)) {
-      i++;
+      i += ch.length;
       continue;
     }
     if (RE_CONNECTING_WORD_CHAR.test(ch)) {
@@ -513,7 +560,11 @@ function pageOwnerFollows(text: string, docStarts: Uint8Array, matchEnd: number)
       let end = i;
       // A document match always starts at a boundary character, and no word character is
       // one, so no document can start inside this run - it is safe to consume whole.
-      while (end < text.length && RE_CONNECTING_WORD_CHAR.test(text[end])) end++;
+      while (end < text.length) {
+        const wordChar = wholeCharAt(text, end);
+        if (!RE_CONNECTING_WORD_CHAR.test(wordChar)) break;
+        end += wordChar.length;
+      }
       if (NON_OWNER_CONNECTORS.has(text.slice(i, end).toLowerCase())) return false;
       words++;
       i = end;

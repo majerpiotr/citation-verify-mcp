@@ -845,6 +845,32 @@ describe("extractCitations - a bare match that is part of a URL is not read as a
       { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
     ]);
   });
+
+  it("keeps a URL's path suppressed when an ASTRAL letter appears inside the URL", () => {
+    // Round-3 review, P0-4. The URL run used to be scanned one UTF-16 CODE UNIT at a time,
+    // so an astral character - a CJK extension ideograph, a mathematical letter, an emoji -
+    // arrived as two lone surrogates, matched no character class at all, and BROKE the run.
+    // Everything after it then read as ordinary prose, so the URL's OWN last path segment
+    // came back as a document, was looked up, and reported `unresolved` with `title: null`:
+    // the delete signal, on a valid external reference. That is precisely the failure the
+    // sub-delimiter silence below is kept in order to avoid, reached from the other side.
+    //
+    // The BMP letter on the second line is the control: it always behaved this way, and an
+    // astral letter must give the same answer as a BMP one. Both are \p{L}, and the class is
+    // the same class - only the iteration width differed.
+    expect(extractCitations("See https://example.com/\u{20BB7},report.pdf for details.")).toEqual([]);
+    expect(extractCitations("See https://example.com/文,report.pdf for details.")).toEqual([]);
+    expect(extractCitations("See https://example.com/\u{1D42D},report.pdf for details.")).toEqual([]);
+  });
+
+  it("still extracts a real citation that follows an astral letter outside the URL run", () => {
+    // Containment for the fix above: an astral character CONTINUES a URL run, it does not
+    // extend one past the whitespace that ends it. Reading whole characters must not turn
+    // the URL guard into a suppressor of ordinary prose that happens to follow a link.
+    expect(extractCitations("See https://example.com/a.pdf and \u{1D42D}he report.pdf.")).toEqual([
+      { token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null },
+    ]);
+  });
 });
 
 describe("extractCitations - a non-ASCII document name is extracted whole, never as a fragment (re-review fix: Critical 1)", () => {
@@ -1628,6 +1654,34 @@ describe("extractCitations - a page phrase that names its own document does not 
 
   it("does not bind a page whose owner is separated by a non-breaking space", () => {
     expect(extractCitations("methods.pdf, page 12 of results.pdf.")).toEqual(bothPlain);
+  });
+
+  it("does not bind a page whose connecting phrase carries an astral letter", () => {
+    // Round-3 review, P1-2: the same code-unit iteration defect as the URL run, in this
+    // probe's three character classes. "𝐭he" is one connecting word of three letters, but
+    // each of them arrived as two lone surrogates matching neither the word class, nor the
+    // decoration class, nor whitespace - so the probe fell through to its final "anything
+    // else ends the phrase" branch and the page bound to methods.pdf, the exact non-null
+    // `title` corruption this whole block exists to prevent. The ASCII "the" spelling one
+    // test above and the astral one here must give the same answer.
+    expect(extractCitations("methods.pdf, page 12 of \u{1D42D}he results.pdf.")).toEqual(bothPlain);
+    expect(extractCitations("methods.pdf, page 12 of \u{1D42D}\u{1D41E}\u{1D425} results.pdf.")).toEqual(
+      bothPlain,
+    );
+  });
+
+  it("still ends the phrase on an astral character that is not a letter", () => {
+    // Containment: the fix is "read whole characters", NOT "step over anything the classes
+    // do not recognize". An emoji is a symbol, and a symbol is neither decoration nor a word,
+    // so it ends the phrase and the page keeps binding left - the same answer its BMP
+    // category-mate "★" gives. A fix that merely skipped surrogate pairs would drop the page
+    // here instead.
+    const paged = [
+      { token: "methods.pdf#p12", docName: "methods.pdf", pages: { from: 12, to: 12 }, nodeId: null },
+      { token: "results.pdf", docName: "results.pdf", pages: null, nodeId: null },
+    ];
+    expect(extractCitations("methods.pdf, page 12 of \u{1F600} results.pdf.")).toEqual(paged);
+    expect(extractCitations("methods.pdf, page 12 of ★ results.pdf.")).toEqual(paged);
   });
 
   it("does not bind a page whose range separator was not recognized", () => {
