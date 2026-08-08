@@ -170,8 +170,11 @@ Keep commits scoped to one defect or one feature, with an explicit path list.
   explanation, which is the very thing being bounded - and the new `truncated` count is what
   keeps that absence visible: `details.length + truncated === total`, and a truncated citation
   must never be read as a miss (hard rule 4). Re-measure with
-  `scripts/measure-response-size.mjs` before changing the number; after the cap the same worst
-  case serializes to 0.75 MB, flat regardless of input size.
+  `scripts/measure-response-size.mjs` before changing the number; after the cap that same worst
+  case serializes to 1.19 MiB, flat regardless of input size. Quote the BARE NODE ID figure,
+  not the document one: that script measures both, and the document shape reads 0.75 MiB
+  because its explanation is shorter. An end-to-end run against the real server is what caught
+  this file quoting the smaller number.
   `PAGEINDEX_FOLDER_ID` is not implemented.
 - The package is NOT published to npm. The README's quick start therefore leads with a
   clone-and-build path and marks the `npx` form as post-publication. Do not present the

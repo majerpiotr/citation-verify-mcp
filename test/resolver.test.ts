@@ -1073,7 +1073,11 @@ describe("verifyCitations - the reported citation count is bounded", () => {
     const bytes = JSON.stringify(result).length;
 
     expect(result.total).toBeGreaterThan(MAX_REPORTED_CITATIONS);
-    expect(bytes).toBeLessThan(4 * 1_048_576);
+    // 2 MiB, not a looser round number: the measured worst case is 1.19 MiB
+    // (scripts/measure-response-size.mjs, the bare-node-id rows), so this leaves enough room
+    // for wording changes in the suggestions and still fails on a real regression. A 4 MiB
+    // bound stood here first and would have passed at more than three times the real size.
+    expect(bytes).toBeLessThan(2 * 1_048_576);
   });
 });
 

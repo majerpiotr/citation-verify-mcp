@@ -11,8 +11,14 @@
 //
 //   npm run build && node scripts/measure-response-size.mjs
 //
-// Expected today: the last column stays flat at roughly 0.75 MB however large the input gets.
-// Before the cap it grew with the input, at about 37x.
+// Expected today: the output column stops growing once the cap engages, however large the
+// input gets. Before the cap it grew with the input, at about 37x.
+//
+// TWO shapes are measured, because they cost different amounts and only the second is the
+// worst case. Past-cap DOCUMENT citations carry DOC_CAP_SUGGESTION; bare NODE IDs carry the
+// longer UNBOUND_ID_SUGGESTION and are what the round-3 review actually reproduced. Quote the
+// node-id figure when stating the bound - an end-to-end run against the real server caught
+// this file understating it by measuring only the document shape.
 import { verifyCitations } from "../dist/resolver.js";
 
 const client = {
@@ -39,6 +45,31 @@ for (const kib of [10, 50, 100, 250, 1024]) {
   const j = JSON.stringify(r);
   console.log(
     `in ${String(kib).padStart(4)} KiB -> total ${String(r.total).padStart(6)}` +
+      `  reported ${String(r.details.length).padStart(5)}  truncated ${String(r.truncated).padStart(6)}` +
+      `  out ${(j.length / 1024 / 1024).toFixed(2)} MiB  (${(j.length / text.length).toFixed(0)}x)`,
+  );
+}
+
+// The WORST case: bare node ids. They are unverifiable by construction, so they touch no
+// backend at all - neither MAX_DISTINCT_DOCUMENTS nor the abort checks engage - and each one
+// carries the longest explanation this server emits. This is the shape the round-3 review
+// measured at 36.9 MB before the cap existed.
+for (const kib of [50, 250, 1024]) {
+  const target = kib * 1024;
+  const parts = [];
+  let i = 0;
+  let length = 0;
+  while (length < target) {
+    const part = `node_id: z${i} `;
+    parts.push(part);
+    length += part.length;
+    i++;
+  }
+  const text = parts.join("").slice(0, target);
+  const r = await verifyCitations(text, client);
+  const j = JSON.stringify(r);
+  console.log(
+    `node ids ${String(kib).padStart(4)} KiB -> total ${String(r.total).padStart(6)}` +
       `  reported ${String(r.details.length).padStart(5)}  truncated ${String(r.truncated).padStart(6)}` +
       `  out ${(j.length / 1024 / 1024).toFixed(2)} MiB  (${(j.length / text.length).toFixed(0)}x)`,
   );

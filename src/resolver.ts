@@ -159,9 +159,13 @@ export const DOC_CAP_SUGGESTION =
 // profile the tool was built for, but one that sits just over it still gets most of its answer.
 //
 // The number is chosen against the input schema's own 1 MiB cap (MAX_INPUT_CHARS in
-// src/server.ts): at this many entries the worst case serializes to roughly one megabyte rather
-// than tens, which is the same order as the input that produced it, while every realistic draft
-// stays whole - a 1 MiB draft citing something every 500 characters is already under it.
+// src/server.ts): at this many entries the worst case serializes to 1.19 MiB rather than tens
+// of megabytes, which is the same order as the input that produced it, while every realistic
+// draft stays whole - a 1 MiB draft citing something every 500 characters is already under it.
+// That worst case is a draft of bare node ids, which carry the longest explanation here
+// (UNBOUND_ID_SUGGESTION); past-cap DOCUMENT citations carry a shorter one and measure 0.75
+// MiB. `scripts/measure-response-size.mjs` prints both - read the node-id row when checking
+// this claim.
 //
 // Exported so a test cannot drift from the real value, and so the disclosures can be checked
 // against it.
