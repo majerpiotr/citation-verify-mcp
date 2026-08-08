@@ -546,6 +546,14 @@ describe("createServer verify_citations tool", () => {
     expect(description).toMatch(
       /`\[node:<id>\]` or `\[<word>:<id>\]` - is `unchecked` UNLESS its value names a real `<name>\.pdf` as a STANDALONE token \(not glued into a longer identifier: `\[node: sub\/chapter\.pdf\]`, `\[node: v1\.pdf-part2\]` and `\[node: report\.pdfx\]` stay `unchecked`\)/,
     );
+    // Round-3 review P2-2: the step-aside used to consult only the BARE pass, so a QUOTED name
+    // inside a tag became one opaque `unchecked` id while the same name in prose was checked -
+    // silently revoking the quote-it-to-have-it-checked remedy in the one place a no-space-script
+    // name has no other way in. The remedy is now stated here, and pinned, because a reader who
+    // does not know it has no way to cite such a name at all.
+    expect(description).toMatch(
+      /or QUOTES one \(`\[Source: "Annual Report\.pdf"\]`\), which is the only way to cite a no-space-script name in a tag/,
+    );
     expect(description).toMatch(
       /then that document \(and any page\/node cited alongside it\) is checked as in prose/i,
     );

@@ -153,7 +153,8 @@ agent to report its own citations honestly.
 | `resolved` | A **count**. |
 | `unresolved` | An **array** of tokens. |
 | `unchecked` | An **array** of tokens. |
-| `details` | One entry per distinct citation: `{ token, status, title, suggestion }`. |
+| `details` | One entry per **reported** citation: `{ token, status, title, suggestion }`. |
+| `truncated` | A **count** of citations found but not reported, because the call hit the [report cap](#limitations). `0` in an ordinary call, and the only thing that makes the arrays stop summing to `total`. |
 
 Each `details` entry carries `status` (`resolved` | `unresolved` | `unchecked`), `title` and
 `suggestion` (a string worth acting on, or `null`).
