@@ -398,9 +398,17 @@ function wholeCharAt(text: string, i: number): string {
   return text[i];
 }
 
+// Shared, empty, and never written to: the answer for a text with no "://" in it, which is
+// the overwhelming majority. isUrlPrefixed reads the mask by index, and an index past the end
+// of a typed array is `undefined`, which is not 1 - the same answer an all-zero mask gives,
+// for none of the allocation. The mask is sized to the INPUT, and those allocations are why
+// the input is capped at all (CLAUDE.md on MAX_INPUT_CHARS: several masks at roughly a 14x
+// heap multiplier), so not allocating this one on the common path is worth a shared constant.
+const NO_URL_FLAGS = new Uint8Array(0);
+
 function urlSchemeFlags(text: string): Uint8Array {
+  if (!text.includes("://")) return NO_URL_FLAGS;
   const flags = new Uint8Array(text.length + 1);
-  if (!text.includes("://")) return flags;
   for (let i = 0; i < text.length; ) {
     const ch = wholeCharAt(text, i);
     const next = i + ch.length;
@@ -629,9 +637,14 @@ const RE_DOC_PAGE = new RegExp(
 // silently losing its page while the bare form worked. One shared definition, used by both
 // call sites, is what stops that drift from being reintroduced by a future change to only
 // one of them.
+//
+// The name half is quotedNameFragment itself, not a second copy of it: the two used to state
+// the same delimiter/content/extension expression twice, which is the identical drift risk
+// this function was written to remove one level up. One capturing group either way, so the
+// group triplet below is unchanged.
 function quotedPageFragment(delim: string): string {
   return (
-    `${delim}([^${delim}]*[${NAME_CHARS}]\\.${PDF_EXT})${delim}` +
+    quotedNameFragment(delim) +
     `${DOC_PAGE_SEP}${PAGE_KEYWORD}[ \\t]*(${PAGE_NUMBER})(?:${RANGE_SEP}(${PAGE_NUMBER}))?${CLOSE_BRACKET}`
   );
 }
@@ -1129,8 +1142,20 @@ export function extractCitations(text: string): Citation[] {
 
   // Bare (unquoted) document mentions, excluding anything already claimed by an
   // identifier's own text or by a quoted name covering the same span.
+  //
+  // The page scan is skipped outright when `docMatches` is empty. Two facts make that safe,
+  // and the second is the load-bearing one: RE_DOC_PAGE begins with DOC_NAME_PATTERN verbatim,
+  // so it can only match where the bare pattern does, and `pageByStart` is only ever read as
+  // `pageByStart.get(start)` for a start that came from `docMatches`. Every entry the scan
+  // could record with `docMatches` empty is therefore unreadable - including in the one case
+  // where the bare pattern did match and `docMatches` is empty anyway, a text whose every
+  // match is a URL's own path segment. This is the file's second full DOC_NAME_PATTERN scan
+  // and the most expensive thing left on the `total: 0` path - the path a draft full of
+  // unverifiable claims takes, which docs/spike-a-findings.md found to be the routine outcome
+  // rather than the rare one.
+  // Measured on 96 KB of ordinary prose naming no document: 1.33 ms -> 0.72 ms per call.
   const pageByStart = new Map<number, { from: number; to: number }>();
-  for (const m of text.matchAll(RE_DOC_PAGE)) {
+  for (const m of docMatches.length > 0 ? text.matchAll(RE_DOC_PAGE) : []) {
     const start = m.index ?? 0;
     // Same rule as the quoted pass above: a page phrase that names its OWN document binds to
     // neither, so the document here is emitted with no page rather than with the wrong one.
