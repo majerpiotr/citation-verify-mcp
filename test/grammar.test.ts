@@ -1608,6 +1608,68 @@ describe("extractCitations - a page phrase that names its own document does not 
     ]);
   });
 
+  // --- round-3 review, P1-1. The test directly above was the only quoted-owner case, and it
+  // passed by ACCIDENT: the bare pass matches `Report.pdf` inside those quotes (a space is a
+  // boundary on its left, the closing quote one on its right), so the probe answered YES off
+  // the BARE pass's mask and never consulted the quoted pass at all. The probe consults only
+  // `docStarts`, which the bare pass populates - so every owner that ONLY the quoted pass can
+  // see was unguarded, and the page bound left: `unresolved` with a NON-NULL title on a
+  // correct citation, the worst shape this tool produces, while the genuine page-12 claim
+  // about the quoted document went unverified. docs/citation-grammar.md has listed
+  // double-quoted names among recognized owners the whole time, so the code contradicted the
+  // published grammar. Each case below was measured binding wrongly.
+  it("does not bind a page whose quoted owner the bare pass cannot see at all", () => {
+    // The pure case: a name in a script that separates no words is deliberately never
+    // extracted bare (quote it, says the grammar), so the quoted pass is the ONLY pass that
+    // recognizes this owner and no bare match can rescue the assertion.
+    expect(extractCitations('methods.pdf, page 12 of "報告書.pdf".')).toEqual([
+      { token: "methods.pdf", docName: "methods.pdf", pages: null, nodeId: null },
+      { token: "報告書.pdf", docName: "報告書.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("does not bind a page whose quoted owner is wider than the connecting-word budget", () => {
+    // The second half of P1-1, and the review's own reproduction: the probe counted the WORDS
+    // OF THE NAME against MAX_CONNECTING_WORDS, so a four-word quoted owner - the widest this
+    // grammar honours - exhausted the budget before reaching the bare match on its last word,
+    // and the page bound left.
+    expect(extractCitations('methods.pdf, page 12 of "Annual Report Draft Final.pdf".')).toEqual([
+      { token: "methods.pdf", docName: "methods.pdf", pages: null, nodeId: null },
+      {
+        token: "Annual Report Draft Final.pdf",
+        docName: "Annual Report Draft Final.pdf",
+        pages: null,
+        nodeId: null,
+      },
+    ]);
+  });
+
+  it("does not bind a page whose quoted owner is over the character cap", () => {
+    // An over-cap span is one name the author wrote, merely longer than this grammar will
+    // vouch for: the quoted pass RESERVES it and emits nothing in any status. It is still a
+    // name, and the same reasoning that honours a URL as an owner it cannot look up applies
+    // here - binding the page left would be a false `unresolved` on the document to the left,
+    // with nothing extracted that could compensate for it. So the page is dropped and only
+    // the unpaged left-hand document remains.
+    const overCap = `"Annual Reporting Statement ${"x".repeat(60)}.pdf"`;
+    expect(extractCitations(`methods.pdf, page 12 of ${overCap}.`)).toEqual([
+      { token: "methods.pdf", docName: "methods.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("still binds left when a quoted span is rejected as prose (disclosed residue)", () => {
+    // The boundary of the fix, and it is disclosed rather than fixed: over the WORD cap a
+    // quoted span is prose, not a name - five words of letters and spaces are
+    // indistinguishable from an ordinary quotation - so it falls through to the bare pass,
+    // which reads the fragment `E.pdf`. Nothing there is an owner the grammar can see, so the
+    // page keeps binding left, exactly as it does for `__results.pdf__`. Making this drop the
+    // page would mean treating every quotation as a document name.
+    expect(extractCitations('methods.pdf, page 12 of "A B C D E.pdf".')).toEqual([
+      { token: "methods.pdf#p12", docName: "methods.pdf", pages: { from: 12, to: 12 }, nodeId: null },
+      { token: "E.pdf", docName: "E.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
   it("does not bind a bracketed page marker whose owner is a following document", () => {
     expect(extractCitations("methods.pdf (page 12 of results.pdf)")).toEqual(bothPlain);
   });

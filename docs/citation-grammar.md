@@ -180,7 +180,15 @@ reason it is not a citation: `methods.pdf, page 12 of __results.pdf__` and
 make those names non-standalone tokens (see
 [A bare name must stand as its own token](#a-bare-name-must-stand-as-its-own-token)). A URL
 *is* honoured as an owner even though its path segment is never extracted: `page 12 of
-https://example.com/results.pdf` drops the page rather than binding it left.
+https://example.com/results.pdf` drops the page rather than binding it left. So is a quoted
+name over the 80-character limit, for the same reason: the grammar reads it as one name and
+reads nothing else out of it, so binding the page left would be a false `unresolved` with
+nothing extracted that could compensate for it.
+
+The words inside a quoted owner are part of the name, not connecting words, so they do not
+count against the three-word budget: `methods.pdf, page 12 of "Annual Report Draft Final.pdf"`
+drops the page, and so does an owner quoted in a script that separates no words - the shape
+this grammar tells you to quote in the first place.
 
 The rule errs towards dropping, and the cases where it drops a page that would have bound
 correctly are the price: `methods.pdf p.3 -> results.pdf p.7` and `methods.pdf p.3 (see

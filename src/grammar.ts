@@ -490,11 +490,36 @@ const DOC_PAGE_SEP = String.raw`(?:[,;]?[ \t]*(?:${CONNECTOR_WORD}[ \t]+)?|[ \t]
 // recognized and checked, because a single quote is an ordinary boundary character.
 //
 // Enumerating prepositions and quote styles is what failed twice, so this is now STRUCTURAL
-// and decides from the bare pass's own verdict rather than re-deriving one. `docStarts`
-// marks the start of every document the bare pass accepted, so "is a document named just
-// after this page phrase" is a mask lookup - the same technique namesStandaloneDoc uses, and
-// for the same reason: two implementations of "is this a document name" is how the last
-// version came to disagree with the rest of the file.
+// and decides from the passes' own verdicts rather than re-deriving one. `docStarts` marks
+// the start of every document the bare pass accepted and `quotedStarts` the start of every
+// span the quoted pass claimed as one name, so "is a document named just after this page
+// phrase" is a mask lookup - the same technique namesStandaloneDoc uses, and for the same
+// reason: two implementations of "is this a document name" is how the last version came to
+// disagree with the rest of the file.
+//
+// Round-3 review (P1-1): `quotedStarts` is the second half of that, and its absence was a
+// hole in exactly the shape this guard exists to close. The probe consulted only `docStarts`,
+// so an owner that ONLY the quoted pass recognizes - a name in a script that separates no
+// words, or one wide enough that the probe spent its whole word budget on the name's own
+// words before reaching the bare match on its last one - was not seen, and the page bound
+// LEFT. Reproduced: `methods.pdf, page 12 of "Annual Report Draft Final.pdf"` reported
+// `methods.pdf#p12`, so a methods.pdf shorter than 12 pages came back `unresolved` carrying a
+// non-null `title` on a citation that was correct, while the genuine page-12 claim went
+// unverified. docs/citation-grammar.md has listed double-quoted names among recognized owners
+// all along, so the code contradicted the published grammar.
+//
+// The mark is set wherever the quoted pass RESERVES a span, which is its own way of saying
+// "these characters are one document name": an accepted name, a name over the character cap
+// (extracted in no status, but still one name the author wrote), and a quoted name inside a
+// URL. It is deliberately NOT set for a span the quoted pass rejects as prose - over the word
+// cap, five words of letters and spaces are indistinguishable from an ordinary quotation, and
+// treating every quotation as an owner would drop pages all over ordinary prose. That residue
+// is the disclosed one: a page still binds left when its owner is written in a form the
+// grammar cannot see as a document at all.
+//
+// It cannot be folded into `docStarts`: that mask is what the node_id and bracket-tag paths
+// ask "does this identifier name a document" (namesStandaloneDoc), those passes run BEFORE
+// the quoted pass, and widening their answer is a separate, undisclosed behaviour change.
 //
 // The probe walks forward from the end of the page match and answers "is this page phrase
 // plausibly followed by the name of the document it belongs to". It steps over:
@@ -537,11 +562,16 @@ const RE_OWNER_DECORATION = /[\p{Ps}\p{Pe}\p{Pi}\p{Pf}\p{Pd}"'`*<>~]/u;
 const RE_OWNER_SPACE = /\s/u;
 const LINE_BREAKS = new Set(["\n", "\r", "\u2028", "\u2029"]);
 
-function pageOwnerFollows(text: string, docStarts: Uint8Array, matchEnd: number): boolean {
+function pageOwnerFollows(
+  text: string,
+  docStarts: Uint8Array,
+  quotedStarts: Uint8Array,
+  matchEnd: number,
+): boolean {
   let i = matchEnd;
   let words = 0;
   while (i < text.length) {
-    if (docStarts[i] === 1) return true;
+    if (docStarts[i] === 1 || quotedStarts[i] === 1) return true;
     // Whole characters, not code units - see wholeCharAt. Every class tested below is a
     // \p{...} class, and half a surrogate pair matches none of them, so an astral letter used
     // to fall straight through to the final branch and bind the page LEFT.
@@ -558,8 +588,9 @@ function pageOwnerFollows(text: string, docStarts: Uint8Array, matchEnd: number)
     if (RE_CONNECTING_WORD_CHAR.test(ch)) {
       if (words === MAX_CONNECTING_WORDS) return false;
       let end = i;
-      // A document match always starts at a boundary character, and no word character is
-      // one, so no document can start inside this run - it is safe to consume whole.
+      // A document match always starts at a boundary character and a quoted one at its
+      // delimiter, and no word character is either, so neither mask can be set inside this
+      // run - it is safe to consume whole.
       while (end < text.length) {
         const wordChar = wholeCharAt(text, end);
         if (!RE_CONNECTING_WORD_CHAR.test(wordChar)) break;
@@ -978,23 +1009,16 @@ export function extractCitations(text: string): Citation[] {
   // the bare match inside it (e.g. plain "report.pdf" inside an ordinary quotation) is
   // left completely free to be found in the bare pass below. An OVER-CAP span is the third
   // case and is handled the opposite way: reserved, so nothing at all comes out of it.
-  const quotedPageByStart = new Map<number, { from: number; to: number }>();
-  for (const m of text.matchAll(RE_QUOTED_DOC_PAGE)) {
-    const start = m.index ?? 0;
-    const name = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 1);
-    const from = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 2);
-    // Only an accepted name can carry a page. An over-cap span emits no document at all, so
-    // there is nothing for a page to bind to; recording one here would be dead weight.
-    if (name === undefined || from === undefined || classifyDelimitedName(name) !== "name") continue;
-    // The page names its own document, which is not this one: drop the page (the quoted
-    // name is still extracted by the pass below, just without it). See pageOwnerFollows.
-    if (pageOwnerFollows(text, docStarts, start + m[0].length)) continue;
-    const to = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 3);
-    quotedPageByStart.set(start, { from: Number(from), to: to !== undefined ? Number(to) : Number(from) });
-  }
-
+  //
+  // Round-3 review (P1-1): this loop now runs BEFORE the quoted PAGE loop, which used to come
+  // first. The order is load-bearing in one direction only: the page loops ask
+  // pageOwnerFollows whether a document is named just after the page phrase, and a quoted name
+  // is one of the answers, so `quotedStarts` has to be complete before either of them runs.
+  // Nothing here depends on the page loop in return - a page is attached to its mention below,
+  // after both have run - so the dependency stays one-way.
   const quotedSpans = new Uint8Array(text.length);
-  const docMentions: DocMention[] = [];
+  const quotedStarts = new Uint8Array(text.length);
+  const quotedMatches: { start: number; end: number; full: string }[] = [];
   for (const m of text.matchAll(RE_QUOTED_DOC)) {
     const start = m.index ?? 0;
     const end = start + m[0].length;
@@ -1009,6 +1033,7 @@ export function extractCitations(text: string): Citation[] {
     // any status - a silence the author can recover from by citing a shorter real name.
     if (verdict === "over-cap") {
       reserveSpan(quotedSpans, start, end);
+      quotedStarts[start] = 1;
       continue;
     }
     // Re-review fix (Minor 4): the URL exclusion used to be applied to the bare pass only,
@@ -1021,10 +1046,38 @@ export function extractCitations(text: string): Citation[] {
     // the URL run - the exclusion would undo itself one pass later.
     if (isUrlPrefixed(urlScheme, start)) {
       reserveSpan(quotedSpans, start, end);
+      quotedStarts[start] = 1;
       continue;
     }
     if (overlapsReserved(idSpans, start, end)) continue;
     reserveSpan(quotedSpans, start, end);
+    // Every reserve above sets this too: the mark means "the quoted pass read these
+    // characters as ONE document name", which is the question pageOwnerFollows asks, not
+    // "a citation was emitted for them". See that function for why the two differ.
+    quotedStarts[start] = 1;
+    quotedMatches.push({ start, end, full });
+  }
+
+  // Pages on quoted names, now that quotedStarts is complete (see above).
+  const quotedPageByStart = new Map<number, { from: number; to: number }>();
+  for (const m of text.matchAll(RE_QUOTED_DOC_PAGE)) {
+    const start = m.index ?? 0;
+    const name = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 1);
+    const from = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 2);
+    // Only an accepted name can carry a page. An over-cap span emits no document at all, so
+    // there is nothing for a page to bind to; recording one here would be dead weight.
+    if (name === undefined || from === undefined || classifyDelimitedName(name) !== "name") continue;
+    // The page names its own document, which is not this one: drop the page (the quoted
+    // name is still extracted, just without it). See pageOwnerFollows.
+    if (pageOwnerFollows(text, docStarts, quotedStarts, start + m[0].length)) continue;
+    const to = delimiterGroup(m, QUOTED_PAGE_GROUP_STRIDE, 3);
+    quotedPageByStart.set(start, { from: Number(from), to: to !== undefined ? Number(to) : Number(from) });
+  }
+
+  // Quoted mentions are emitted before bare ones, exactly as they were when this loop and the
+  // one above were one loop: docMentions order is the node binder's documented tie-break.
+  const docMentions: DocMention[] = [];
+  for (const { start, end, full } of quotedMatches) {
     docMentions.push({ start, end, full, page: quotedPageByStart.get(start) ?? null });
   }
 
@@ -1035,7 +1088,7 @@ export function extractCitations(text: string): Citation[] {
     const start = m.index ?? 0;
     // Same rule as the quoted pass above: a page phrase that names its OWN document binds to
     // neither, so the document here is emitted with no page rather than with the wrong one.
-    if (pageOwnerFollows(text, docStarts, start + m[0].length)) continue;
+    if (pageOwnerFollows(text, docStarts, quotedStarts, start + m[0].length)) continue;
     const from = Number(m[2]);
     const to = m[3] !== undefined ? Number(m[3]) : from;
     pageByStart.set(start, { from, to });
