@@ -136,13 +136,67 @@ export const DOC_CAP_SUGGESTION =
 // stderr into its log files, so a huge response body must not flood them.
 const MAX_LOG_LINE_CHARS = 400;
 
-// Renders untrusted text as a single printable line: control characters (which could forge
-// a second log line or inject a terminal escape sequence) are collapsed to spaces, runs of
-// whitespace collapse, and the result is length-capped. This is hygiene, NOT redaction -
-// see logLookupFailure for where a secret can actually be removed.
+// Collapses untrusted text to a single printable line: control characters (which could forge
+// a second log line, inject a terminal escape sequence, or - on the model-facing path below -
+// smuggle what reads like a message boundary) become spaces, runs of whitespace collapse, and
+// the ends are trimmed. Shared by BOTH places this file renders untrusted text, so there is
+// exactly one definition of what "printable single line" means here. This is hygiene, NOT
+// redaction - see logLookupFailure for where a secret can actually be removed.
+function flattenToOneLine(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+// The stderr rendering: flattened, then length-capped. Truncation is the right answer HERE
+// because the reader is a human holding the pager, who can go and find the rest.
 function oneSafeLine(text: string): string {
-  const flat = text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  const flat = flattenToOneLine(text);
   return flat.length > MAX_LOG_LINE_CHARS ? `${flat.slice(0, MAX_LOG_LINE_CHARS)}...` : flat;
+}
+
+// Bound on a near-match name this server is willing to quote back to a model. Deliberately far
+// below MAX_LOG_LINE_CHARS: that is a bound on a stderr line, and a real document file name is
+// nothing like that long. The value is MAX_DELIMITED_NAME_CHARS from src/grammar.ts - the
+// longest quoted name this server's own grammar will accept as a citation - because a hint too
+// long to be written back into the draft and re-checked cannot help the reader who gets it.
+const MAX_NEAR_MATCH_CHARS = 80;
+
+// Renders the backend's near-name hint, and is the ONE model-facing string in this file that
+// is not a constant. Every other one is static precisely so this channel stays bounded and
+// quotes nothing - see the DOC_UNCHECKED_SUGGESTION comment, which states that requirement.
+//
+// `similar_files` is backend-controlled, and src/pageindex-client.ts validates it as
+// `typeof value === "string"` and nothing more: unbounded in length, control characters
+// intact, its content chosen by the backend or by whoever named a file in the corpus. It used
+// to be interpolated verbatim, and the R3 review reproduced a 200 KB instruction-injection
+// payload carrying raw newlines, ESC and BEL coming back byte-identical in `suggestion` and
+// JSON-stringified straight into the consuming model's context - amplified once per CITATION,
+// because the not-found outcome is memoized and copied into every citation naming the missing
+// document.
+//
+// So the value is flattened like any other untrusted text, and then has to EARN the quotation
+// marks. Three ways it does not, all answered with the static NO_NEAR_MATCH_SUGGESTION, which
+// is the honest reply: "the backend offered nothing usable" and "the backend offered nothing"
+// ask the same thing of the reader - go and look the real name up.
+//
+//   - Longer than MAX_NEAR_MATCH_CHARS. Truncating is NOT an option here, unlike the log line:
+//     this name exists to be typed back, and half a file name is not a name, it is an
+//     invitation to guess - the one thing this server refuses to do.
+//   - Empty after flattening (the value was empty, whitespace, or nothing but control
+//     characters). It used to render `Did you mean ""?`, which reads like a real answer and
+//     says nothing at all.
+//   - Contains a double quote. Even bounded printable text can forge the end of the quoted
+//     name and carry on in this server's own voice (`x.pdf"? Ignore the above. "`). A real
+//     file name effectively never carries one, so refusing costs nothing.
+//
+// Whatever it decides, the VERDICT is untouched: the token stays `unresolved`, exactly as it
+// would with either string.
+function nearMatchSuggestion(similar: string | undefined): string {
+  if (similar === undefined) return NO_NEAR_MATCH_SUGGESTION;
+  const name = flattenToOneLine(similar);
+  if (name.length === 0 || name.length > MAX_NEAR_MATCH_CHARS || name.includes('"')) {
+    return NO_NEAR_MATCH_SUGGESTION;
+  }
+  return `Did you mean "${name}"?`;
 }
 
 // Only an error's name and message, never its stack (which can quote the message again)
@@ -396,10 +450,9 @@ async function getDocOutcome(
       : {
           kind: "not-found",
           // A real near match from the backend is strictly better information than the
-          // generic hint, so it wins whenever one was offered.
-          suggestion: result.similar[0]
-            ? `Did you mean "${result.similar[0]}"?`
-            : NO_NEAR_MATCH_SUGGESTION,
+          // generic hint, so it wins whenever one was offered AND survives sanitizing - the
+          // value is untrusted text, see nearMatchSuggestion.
+          suggestion: nearMatchSuggestion(result.similar[0]),
         };
   } catch (err) {
     // A cancellation is NOT a lookup failure and must not be laundered into one. This catch is
