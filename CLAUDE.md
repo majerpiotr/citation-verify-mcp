@@ -161,6 +161,17 @@ Keep commits scoped to one defect or one feature, with an explicit path list.
   cover the allocation - `src/grammar.ts` builds several `Uint8Array` masks sized to the input
   before any lookup runs, at roughly a 14x heap multiplier. `MAX_DISTINCT_DOCUMENTS` cannot
   substitute for it: that bounds what happens after parsing, and the allocation happens first.
+  Fourth, `MAX_REPORTED_CITATIONS` in `src/resolver.ts` caps the citations one call will REPORT
+  at 2000, and this one bounds the RESPONSE rather than the work. None of the three above touch
+  it: a schema-valid 1 MiB input of repeated bare node ids measured 96,335 citations and a
+  36.9 MB JSON result in milliseconds with ZERO backend calls, because the cost is the
+  per-citation explanation and JSON repeats that string once per entry. Everything past the cap
+  is ABSENT from the report rather than `unchecked` - an `unchecked` entry carries an
+  explanation, which is the very thing being bounded - and the new `truncated` count is what
+  keeps that absence visible: `details.length + truncated === total`, and a truncated citation
+  must never be read as a miss (hard rule 4). Re-measure with
+  `scripts/measure-response-size.mjs` before changing the number; after the cap the same worst
+  case serializes to 0.75 MB, flat regardless of input size.
   `PAGEINDEX_FOLDER_ID` is not implemented.
 - The package is NOT published to npm. The README's quick start therefore leads with a
   clone-and-build path and marks the `npx` form as post-publication. Do not present the
