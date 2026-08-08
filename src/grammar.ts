@@ -717,25 +717,37 @@ const RE_NODE_ID = new RegExp(String.raw`${NODE_ID_KEYWORD}[:=]\s*([^${NAME_BOUN
 const RE_BRACKET_TAG = /\[[A-Za-z]+[ \t]*:[ \t]*([^[\]\n \t][^[\]\n]*)\]/gd;
 
 // True when an identifier's own span - a bracket tag's value, or a node_id: id - contains a
-// document name that the bare pass has ALREADY accepted as a standalone token of the
-// surrounding text. Both identifier paths use it to decide whether to step aside and let the
-// ordinary document/page/node scans read the real citation out of their own characters,
-// instead of reserving the span and reporting a synthetic "node_id:<value>" token.
+// document name one of the document passes has ALREADY accepted out of the surrounding text.
+// Both identifier paths use it to decide whether to step aside and let the ordinary
+// document/page/node scans read the real citation out of their own characters, instead of
+// reserving the span and reporting a synthetic "node_id:<value>" token.
 //
-// The decision has to be the bare pass's own answer, not a re-derivation of it, and that is
-// what the mask gives: `docStarts` marks the start of every match the bare pass accepted, so
-// "does an accepted document start inside this span" is one lookup and cannot drift from
-// what the bare pass will actually do. The earlier version re-ran the document regex over
-// the value as an isolated STRING and applied its own boundary test to it - two
-// reimplementations of one rule, which is how they came to disagree in the first place, and
-// which would disagree again here: a value evaluated in isolation has the start of the text
-// as its left neighbour, so "[node:report.pdf]" would step aside on the strength of a match
-// the bare pass rejects (its real left neighbour is the tag's ":"), and the citation would
-// vanish from every status. Deciding both from one mask makes that class of drift
-// unrepresentable.
+// The decision has to be those passes' own answer, not a re-derivation of it, and that is
+// what the masks give: `docStarts` marks the start of every match the bare pass accepted and
+// `quotedStarts` the start of every span the quoted pass read as one name, so "does an
+// accepted document start inside this span" is one lookup and cannot drift from what those
+// passes will actually do. The earlier version re-ran the document regex over the value as an
+// isolated STRING and applied its own boundary test to it - two reimplementations of one
+// rule, which is how they came to disagree in the first place, and which would disagree again
+// here: a value evaluated in isolation has the start of the text as its left neighbour, so
+// "[node:report.pdf]" would step aside on the strength of a match the bare pass rejects (its
+// real left neighbour is the tag's ":"), and the citation would vanish from every status.
+// Deciding both from one mask makes that class of drift unrepresentable.
+//
+// Round-3 review (P2-2): `quotedStarts` is the second half of that, and asking only the BARE
+// pass was a hole in the same shape the step-aside exists to close. A quoted name is the other
+// way this grammar recognizes a document, and for a name written in a script that separates no
+// words it is the ONLY way - the bare pass declines that shape by design. So
+// `[Source: "<no-space-script name>.pdf"]` reserved its whole value and reported one opaque
+// `unchecked` id, while the identical quoted name in ordinary prose was extracted and checked.
+// Safe under hard rule 4, but it silently revoked the remedy this grammar tells a caller to
+// use - quote the name to have it checked - inside the very syntax docs/spike-a-findings.md
+// found real agents citing in. Reading BOTH masks is what makes the three syntaxes agree from
+// one definition instead of two.
 //
 // A match starting inside the span also ENDS inside it: "]" and every other delimiter that
-// closes such a span is a boundary character, which no name may contain.
+// closes such a span is a boundary character, which no bare name may contain, and a quoted
+// name's own closing delimiter sits inside the span its start was found in.
 //
 // Both directions of the decision matter, and they fail differently:
 //   - stepping aside when the value is NOT a document lets a fragment of a host-invented
@@ -744,8 +756,16 @@ const RE_BRACKET_TAG = /\[[A-Za-z]+[ \t]*:[ \t]*([^[\]\n \t][^[\]\n]*)\]/gd;
 //   - refusing to step aside when it IS one hides a possibly fabricated document behind
 //     docName: null, where the consuming agent's "keep every unchecked citation" policy
 //     preserves it unchecked forever.
-function namesStandaloneDoc(docStarts: Uint8Array, start: number, end: number): boolean {
-  return docStarts.subarray(start, end).indexOf(1) !== -1;
+function namesStandaloneDoc(
+  docStarts: Uint8Array,
+  quotedStarts: Uint8Array,
+  start: number,
+  end: number,
+): boolean {
+  return (
+    docStarts.subarray(start, end).indexOf(1) !== -1 ||
+    quotedStarts.subarray(start, end).indexOf(1) !== -1
+  );
 }
 
 // Sentence boundary, the concrete definition "same sentence" is built on: a run of .!?
@@ -909,6 +929,64 @@ export function extractCitations(text: string): Citation[] {
     docStarts[start] = 1;
   }
 
+  // Quoted document mentions - preferred over a bare match covering the same span, but
+  // ONLY when the delimited content is genuinely file-name-shaped (classifyDelimitedName).
+  // Computed before bare mentions so an ACCEPTED span can be excluded from them; a span
+  // rejected as PROSE contributes nothing here - not a docMention, not a reserved span - so
+  // the bare match inside it (e.g. plain "report.pdf" inside an ordinary quotation) is
+  // left completely free to be found in the bare pass below. An OVER-CAP span is the third
+  // case and is handled the opposite way: reserved, so nothing at all comes out of it.
+  //
+  // Round-3 review (P1-1, then P2-2): this loop has moved twice, and both moves are the same
+  // dependency. Three later passes ask what the quoted pass decided, so `quotedStarts` has to
+  // be complete before any of them runs: the two page loops ask pageOwnerFollows whether a
+  // document is named just after a page phrase (P1-1), and both identifier loops ask
+  // namesStandaloneDoc whether their own value names one (P2-2). Nothing here depends on those
+  // passes in return - a page is attached to its mention below, after all of them have run -
+  // except the one check called out at the docMentions loop, which is deferred there for
+  // exactly this reason. So the dependency stays one-way.
+  const quotedSpans = new Uint8Array(text.length);
+  const quotedStarts = new Uint8Array(text.length);
+  const quotedMatches: { start: number; end: number; full: string }[] = [];
+  for (const m of text.matchAll(RE_QUOTED_DOC)) {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    const full = delimiterGroup(m, QUOTED_DOC_GROUP_STRIDE, 1);
+    if (full === undefined) continue;
+    const verdict = classifyDelimitedName(full);
+    // Prose: ignore the quote entirely, leaving any real bare name inside it to the bare pass.
+    if (verdict === "not-a-name") continue;
+    // One name, over the word or character cap. RESERVING is the whole point: without it the
+    // bare pass matched the tail of the name the author wrote and checked it as a different
+    // document (`"A B C D E.pdf"` was read as `E.pdf`). Nothing is emitted for this span in
+    // any status - a silence the author can recover from by citing a shorter real name.
+    if (verdict === "over-cap") {
+      reserveSpan(quotedSpans, start, end);
+      quotedStarts[start] = 1;
+      continue;
+    }
+    // Re-review fix (Minor 4): the URL exclusion used to be applied to the bare pass only,
+    // so a URL's own path segment was still extracted whenever it happened to be delimited
+    // ("https://example.com/`report.pdf`"). Both the README and the tool description state
+    // flatly that a URL's path segment is not extracted in any status, so the quoted pass
+    // has to honour the same rule. The span is still RESERVED (unlike a span rejected by
+    // classifyDelimitedName as prose above): dropping it silently would leave the bare match
+    // delimiters free to be picked up by the bare pass, where the delimiter itself now ends
+    // the URL run - the exclusion would undo itself one pass later.
+    if (isUrlPrefixed(urlScheme, start)) {
+      reserveSpan(quotedSpans, start, end);
+      quotedStarts[start] = 1;
+      continue;
+    }
+    reserveSpan(quotedSpans, start, end);
+    // Every reserve above sets this too: the mark means "the quoted pass read these
+    // characters as ONE document name", which is the question pageOwnerFollows and
+    // namesStandaloneDoc both ask, not "a citation was emitted for them". See those two
+    // functions for why the answers differ.
+    quotedStarts[start] = 1;
+    quotedMatches.push({ start, end, full });
+  }
+
   // Identifier-like citations next (node_id: and the generic bracket tag): their own matched
   // span is a reserved span that the document mentions below must never be read out of
   // (Important 6) - "node_id: sub/chapter.pdf" must not let "chapter.pdf" be discovered as a
@@ -926,7 +1004,8 @@ export function extractCitations(text: string): Citation[] {
     // keep-every-unchecked-citation policy would preserve a fabrication indefinitely. The
     // two paths name one id space, so a claim that they agree has to be true of every id,
     // not only of the ones neither of them checks.
-    if (groupSpan && namesStandaloneDoc(docStarts, groupSpan[0], groupSpan[1])) continue;
+    if (groupSpan && namesStandaloneDoc(docStarts, quotedStarts, groupSpan[0], groupSpan[1]))
+      continue;
     if (groupSpan) reserveSpan(idSpans, groupSpan[0], groupSpan[1]);
     const id = stripTrailingPunctuation(m[1]);
     // Nothing left after stripping (e.g. "node_id: ..."): not a citation. An empty id
@@ -994,68 +1073,13 @@ export function extractCitations(text: string): Citation[] {
     // standalone document ("[node: abc-123 report.pdf]"), the whole tag steps aside, so the
     // slug is not reported in any status. The slug is unverifiable either way, whereas the
     // document is a checkable claim that must not hide behind `unchecked`.
-    if (groupSpan && namesStandaloneDoc(docStarts, groupSpan[0], groupSpan[1])) continue;
+    if (groupSpan && namesStandaloneDoc(docStarts, quotedStarts, groupSpan[0], groupSpan[1]))
+      continue;
     if (groupSpan) reserveSpan(idSpans, groupSpan[0], groupSpan[1]);
     instances.push({
       index: start,
       citation: { token: `node_id:${value}`, docName: null, pages: null, nodeId: value },
     });
-  }
-
-  // Quoted document mentions - preferred over a bare match covering the same span, but
-  // ONLY when the delimited content is genuinely file-name-shaped (classifyDelimitedName).
-  // Computed before bare mentions so an ACCEPTED span can be excluded from them; a span
-  // rejected as PROSE contributes nothing here - not a docMention, not a reserved span - so
-  // the bare match inside it (e.g. plain "report.pdf" inside an ordinary quotation) is
-  // left completely free to be found in the bare pass below. An OVER-CAP span is the third
-  // case and is handled the opposite way: reserved, so nothing at all comes out of it.
-  //
-  // Round-3 review (P1-1): this loop now runs BEFORE the quoted PAGE loop, which used to come
-  // first. The order is load-bearing in one direction only: the page loops ask
-  // pageOwnerFollows whether a document is named just after the page phrase, and a quoted name
-  // is one of the answers, so `quotedStarts` has to be complete before either of them runs.
-  // Nothing here depends on the page loop in return - a page is attached to its mention below,
-  // after both have run - so the dependency stays one-way.
-  const quotedSpans = new Uint8Array(text.length);
-  const quotedStarts = new Uint8Array(text.length);
-  const quotedMatches: { start: number; end: number; full: string }[] = [];
-  for (const m of text.matchAll(RE_QUOTED_DOC)) {
-    const start = m.index ?? 0;
-    const end = start + m[0].length;
-    const full = delimiterGroup(m, QUOTED_DOC_GROUP_STRIDE, 1);
-    if (full === undefined) continue;
-    const verdict = classifyDelimitedName(full);
-    // Prose: ignore the quote entirely, leaving any real bare name inside it to the bare pass.
-    if (verdict === "not-a-name") continue;
-    // One name, over the word or character cap. RESERVING is the whole point: without it the
-    // bare pass matched the tail of the name the author wrote and checked it as a different
-    // document (`"A B C D E.pdf"` was read as `E.pdf`). Nothing is emitted for this span in
-    // any status - a silence the author can recover from by citing a shorter real name.
-    if (verdict === "over-cap") {
-      reserveSpan(quotedSpans, start, end);
-      quotedStarts[start] = 1;
-      continue;
-    }
-    // Re-review fix (Minor 4): the URL exclusion used to be applied to the bare pass only,
-    // so a URL's own path segment was still extracted whenever it happened to be delimited
-    // ("https://example.com/`report.pdf`"). Both the README and the tool description state
-    // flatly that a URL's path segment is not extracted in any status, so the quoted pass
-    // has to honour the same rule. The span is still RESERVED (unlike a span rejected by
-    // classifyDelimitedName as prose above): dropping it silently would leave the bare match
-    // delimiters free to be picked up by the bare pass, where the delimiter itself now ends
-    // the URL run - the exclusion would undo itself one pass later.
-    if (isUrlPrefixed(urlScheme, start)) {
-      reserveSpan(quotedSpans, start, end);
-      quotedStarts[start] = 1;
-      continue;
-    }
-    if (overlapsReserved(idSpans, start, end)) continue;
-    reserveSpan(quotedSpans, start, end);
-    // Every reserve above sets this too: the mark means "the quoted pass read these
-    // characters as ONE document name", which is the question pageOwnerFollows asks, not
-    // "a citation was emitted for them". See that function for why the two differ.
-    quotedStarts[start] = 1;
-    quotedMatches.push({ start, end, full });
   }
 
   // Pages on quoted names, now that quotedStarts is complete (see above).
@@ -1078,6 +1102,16 @@ export function extractCitations(text: string): Citation[] {
   // one above were one loop: docMentions order is the node binder's documented tie-break.
   const docMentions: DocMention[] = [];
   for (const { start, end, full } of quotedMatches) {
+    // Deferred from the quoted loop, which now runs BEFORE the identifier ones (see there):
+    // a quoted name lying inside an identifier's own reserved text is that identifier's
+    // characters, not a citation of its own. With the step-aside reading `quotedStarts` this
+    // is now a boundary rather than a live case - an accepted quoted name holds no ":" or
+    // "[", so a tag opener cannot sit inside one, and a node id stops at the delimiter, which
+    // leaves the quoted span starting INSIDE the value as the only way to overlap, and that
+    // is exactly what makes the identifier step aside and reserve nothing. It is kept because
+    // "no span can overlap" is a property of two other rules, not of this one, and the cost
+    // of being wrong is a fragment of an id checked as a document.
+    if (overlapsReserved(idSpans, start, end)) continue;
     docMentions.push({ start, end, full, page: quotedPageByStart.get(start) ?? null });
   }
 

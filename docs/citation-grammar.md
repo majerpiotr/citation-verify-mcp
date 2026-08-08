@@ -253,6 +253,12 @@ its id space has no defined relationship to the backend's per-document node ordi
 that real document (and any page or node cited alongside it inside the same brackets, e.g.
 `[Source: report.pdf p.5]`) is extracted and checked exactly as it would be in ordinary prose.
 
+A name **quoted** inside the value names one too - `[Source: "Annual Report.pdf"]` is checked,
+by the same [quoted-name rule](#quoted-names) that governs a quotation anywhere else. That is
+what keeps the quote-it-to-have-it-checked remedy working inside a tag, and it is the only way
+to cite a name written in a script that separates no words there, since the bare rule declines
+that shape by design.
+
 "Standalone" is the operative word, and it is not a bracket-tag rule: it is
 [the grammar's single rule](#a-bare-name-must-stand-as-its-own-token) about where a name may
 begin and end, applied identically in prose, in `node_id:` and here, from one definition. So

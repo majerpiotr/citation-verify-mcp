@@ -807,6 +807,52 @@ describe("extractCitations - a bracket-tag value containing a real citation is e
   });
 });
 
+describe("extractCitations - a QUOTED name inside a bracket-tag value is checked, not swallowed (round-3 review: P2-2)", () => {
+  // The step-aside above is what stops a real citation from hiding behind `unchecked` inside
+  // a tag, and it asked ONE question: "did the BARE pass accept a document starting in these
+  // characters?". A quoted name is the other way this grammar recognizes a document, and for
+  // the shapes the bare pass declines by design - a name in a script that separates no words
+  // - it is the ONLY way. Those tags therefore reserved the whole value and reported one
+  // opaque `unchecked` id, while the identical quoted name written in ordinary prose was
+  // extracted and checked. The direction is safe (an `unchecked` citation is never deleted),
+  // but it silently revoked the remedy this grammar tells a caller to use - quote the name to
+  // have it checked - in exactly the syntax spike A found real agents citing in, which is
+  // "defect 2" all over again for the other half of the grammar.
+  it("checks a quoted no-space-script name inside a bracket tag", () => {
+    expect(extractCitations('[Source: "年次報告書.pdf"]')).toEqual([
+      { token: "年次報告書.pdf", docName: "年次報告書.pdf", pages: null, nodeId: null },
+    ]);
+  });
+
+  it("gives the same answer inside brackets as in prose", () => {
+    // The claim is agreement, not merely "something is checked": the tag must step aside
+    // exactly as it does for a bare name, leaving the ordinary passes to read the citation.
+    expect(extractCitations('[Source: "年次報告書.pdf"]')).toEqual(
+      extractCitations('See "年次報告書.pdf" for details.'),
+    );
+  });
+
+  it("carries a page cited alongside such a name in the same brackets", () => {
+    expect(extractCitations('[Source: "年次報告書.pdf" p.12]')).toEqual([
+      { token: "年次報告書.pdf#p12", docName: "年次報告書.pdf", pages: { from: 12, to: 12 }, nodeId: null },
+    ]);
+  });
+
+  it("still reports an unchecked id for a quoted value that names no document (regression)", () => {
+    // Containment: only a span the QUOTED pass read as one document name makes the tag step
+    // aside. An ordinary quoted slug is not one, so it keeps the reserve-and-report-unchecked
+    // behaviour, quotes included - it is the tag's own text.
+    expect(extractCitations('[node: "some-doc-id-123"]')).toEqual([
+      {
+        token: 'node_id:"some-doc-id-123"',
+        docName: null,
+        pages: null,
+        nodeId: '"some-doc-id-123"',
+      },
+    ]);
+  });
+});
+
 describe("extractCitations - a bare match that is part of a URL is not read as a document (whole-branch review fix, defect 1)", () => {
   it("does not read a bare https URL ending in .pdf as a document", () => {
     expect(extractCitations("Source: https://example.com/whitepaper.pdf for the numbers.")).toEqual([]);

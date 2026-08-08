@@ -424,8 +424,10 @@ The grammar is fixed, not learned, and deliberately narrow. In summary:
 - **A bare `node_id:` with no document in its sentence is always `unchecked`, never
   `unresolved`.** Node numbering is per-document, so a node id alone identifies nothing.
 - **A bracket tag** (`[node: some-doc-id-123]`, `[chunk: abc-42]`) is `unchecked` unless its
-  value names a `.pdf` document as a standalone token - then that document is checked exactly
-  as it would be in prose. Written with **no space** after the colon, `[node:report.pdf]` and
+  value names a `.pdf` document as a standalone token, or quotes one
+  (`[Source: "Annual Report.pdf"]`) - then that document is checked exactly
+  as it would be in prose. Quoting is the only way to cite a no-space-script name in a tag,
+  exactly as it is in prose. Written with **no space** after the colon, `[node:report.pdf]` and
   `node_id:report.pdf` stay `unchecked` instead: the colon glues the name into the id. Write
   the space. The value ends at the closing `]`, a newline or a nested `[`, so a tag whose value
   contains a `[` (`[node: abc[1]]`) is not recognized as a tag at all - though a `.pdf` written

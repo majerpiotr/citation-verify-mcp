@@ -125,7 +125,9 @@ export function createServer(client: DocLookup): McpServer {
         "A bracket tag - `[node:<id>]` or `[<word>:<id>]` - is `unchecked` UNLESS its " +
         "value names a real `<name>.pdf` as a STANDALONE token (not glued into a longer " +
         "identifier: `[node: sub/chapter.pdf]`, `[node: v1.pdf-part2]` and " +
-        "`[node: report.pdfx]` stay `unchecked`); then that document (and any page/node " +
+        "`[node: report.pdfx]` stay `unchecked`), or QUOTES one (`[Source: " +
+        '"Annual Report.pdf"]`), which is the only way to cite a no-space-script name in a ' +
+        "tag; then that document (and any page/node " +
         "cited alongside it) is checked as in prose - otherwise it stays a standalone " +
         "`unchecked` id, never bound to any document (id space unconfirmed): cite the " +
         "real `<name>.pdf` for a verdict. A value carrying both a slug and a standalone " +
