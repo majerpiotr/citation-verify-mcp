@@ -14,6 +14,7 @@ import {
   shouldFetchNextStructurePart,
   accumulateNodeIds,
   assertSecureBaseUrl,
+  resolveBaseUrl,
   sanitizeLookupError,
   PageindexHttpClient,
 } from "../src/pageindex-client.js";
@@ -758,6 +759,62 @@ describe("assertSecureBaseUrl", () => {
   });
 });
 
+// `resolveBaseUrl` is what turns `PAGEINDEX_BASE_URL` (or its absence) into a `URL`, and it
+// exists because `new URL()` alone throws a bare "Invalid URL" - no variable name, no
+// offending value - leaving an operator who typo'd one line of a .env guessing which of
+// several settings is wrong (round-3 review, P2-4 second bullet). Pinned as a pure function,
+// independent of `connect`'s network attempt, exactly like `assertSecureBaseUrl` above it.
+describe("resolveBaseUrl", () => {
+  it("falls back to the default for an absent value", () => {
+    expect(resolveBaseUrl(undefined).href).toBe("https://api.pageindex.ai/mcp");
+  });
+
+  // `process.env["X"] ?? DEFAULT` only falls back for an ABSENT variable, not an empty one -
+  // so `PAGEINDEX_BASE_URL=` in a .env file used to reach `new URL("")` and fail startup with
+  // that bare, unnamed "Invalid URL". An empty line is a far more likely way to end up with
+  // an empty string than a hand-typed override, and it almost always means "don't override
+  // the default", not "use this deliberately blank value" - there is no such thing as a
+  // meaningful empty base URL to preserve by failing instead. So this falls back rather than
+  // throwing; see the comment on `resolveBaseUrl` in src/pageindex-client.ts for the full
+  // reasoning.
+  it("falls back to the default for an empty value, not a startup failure", () => {
+    expect(resolveBaseUrl("").href).toBe("https://api.pageindex.ai/mcp");
+  });
+
+  it("parses an explicit override", () => {
+    expect(resolveBaseUrl("https://self-hosted.example.com/mcp").href).toBe(
+      "https://self-hosted.example.com/mcp",
+    );
+  });
+
+  it("names PAGEINDEX_BASE_URL and echoes the value when it cannot be parsed", () => {
+    expect(() => resolveBaseUrl("not a url")).toThrow(/PAGEINDEX_BASE_URL/);
+    expect(() => resolveBaseUrl("not a url")).toThrow(/not a url/);
+  });
+
+  // The value is a config setting, never a secret (the API key is never part of it - it
+  // travels only in the Authorization header `connect` builds afterwards), so echoing it is
+  // safe and is exactly what makes the error diagnosable. But it is raw, unvalidated text
+  // straight from the environment, so it must not reach a thrown message - and from there an
+  // MCP host's log file - unbounded or carrying a literal control character that could forge
+  // a second log line or inject a terminal escape sequence.
+  it("bounds and flattens a hostile unparseable value before echoing it", () => {
+    const hostile = `not\na\rurl${"x".repeat(500)}`;
+    let message = "";
+    try {
+      resolveBaseUrl(hostile);
+      throw new Error("expected resolveBaseUrl to throw");
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/PAGEINDEX_BASE_URL/);
+    expect(message).not.toContain("\n");
+    expect(message).not.toContain("\r");
+    expect(message).not.toContain("x".repeat(500));
+    expect(message.length).toBeLessThan(400);
+  });
+});
+
 // `connect` is the one function that interpolates the API key into an Authorization
 // header, and it is called directly with a LIVE key by test/integration.test.ts. Without
 // a guard of its own, a key carrying an embedded control character (a wrapped paste, a
@@ -806,6 +863,38 @@ describe("PageindexHttpClient.connect key guard", () => {
     const outcome = await connectOutcome(USABLE_FAKE_KEY);
     expect(outcome.quotedKey).toBe(false);
     expect(outcome.message).not.toMatch(/API key is unusable/);
+  });
+});
+
+// `connect` reads `PAGEINDEX_BASE_URL` through `resolveBaseUrl` (pinned in isolation above)
+// before it ever builds a transport or touches the API key. This block exercises that wiring
+// end to end through `connect` itself, the same way the key guard block above exercises
+// `isUsableApiKey` end to end - proof the two functions are actually called, not just proof
+// they work in isolation.
+describe("PageindexHttpClient.connect base URL guard", () => {
+  const USABLE_FAKE_KEY = "pi-FAKE-USABLE-cccc";
+
+  const originalBaseUrl = process.env["PAGEINDEX_BASE_URL"];
+  afterEach(() => {
+    if (originalBaseUrl === undefined) delete process.env["PAGEINDEX_BASE_URL"];
+    else process.env["PAGEINDEX_BASE_URL"] = originalBaseUrl;
+  });
+
+  it("names PAGEINDEX_BASE_URL when the override cannot be parsed as a URL", async () => {
+    process.env["PAGEINDEX_BASE_URL"] = "not a url";
+    await expect(PageindexHttpClient.connect(USABLE_FAKE_KEY)).rejects.toThrow(
+      /PAGEINDEX_BASE_URL/,
+    );
+  });
+
+  it("still runs the key guard before an unparseable base URL is ever reached", async () => {
+    process.env["PAGEINDEX_BASE_URL"] = "not a url";
+    // A control character makes the key unusable; if this ever threw the base-url message
+    // instead of the key one, the ordering CLAUDE.md and the comment above `connect` require
+    // (key guard before anything touches the URL) would have silently regressed.
+    await expect(PageindexHttpClient.connect("pi-FAKE\nBROKEN")).rejects.toThrow(
+      /API key is unusable/,
+    );
   });
 });
 

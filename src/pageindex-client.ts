@@ -60,6 +60,17 @@ function excerptOf(value: unknown): string {
   }
 }
 
+// Like `excerpt`, but for text that never passed through `JSON.parse` first - so, unlike a
+// backend payload's text, it can carry a raw control character `excerpt` would let straight
+// through (its own regex only collapses *whitespace* runs). Used for config values (currently
+// just `PAGEINDEX_BASE_URL`) that get echoed into a thrown error: a literal newline could forge
+// a second stderr line, and a terminal escape sequence could do worse to whatever renders the
+// message. Flatten those to spaces first, then apply `excerpt`'s existing whitespace-collapse
+// and length cap.
+function safeConfigExcerpt(text: string): string {
+  return excerpt(text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " "));
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -429,6 +440,46 @@ export async function accumulateNodeIds(
 // it fails closed, and an operator can always spell the address the ordinary way.
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
+// PURE. Turns `PAGEINDEX_BASE_URL` (as read from `process.env`, so `undefined` when unset)
+// into a `URL`, with a message that names the variable when the value cannot be parsed.
+// `new URL()` alone throws a bare "Invalid URL" - no variable name, no offending value - which
+// leaves an operator staring at a stack trace with no idea which of several env settings is
+// wrong (round-3 review, P2-4 second bullet). `assertSecureBaseUrl` right below already sets
+// the precedent for a config error that names the setting and echoes back what was rejected;
+// this does the same for the parse step that has to succeed before that function even has a
+// URL to look at. Called before `assertSecureBaseUrl`, never after: a value that cannot be
+// parsed at all has no `protocol` or `host` for that function to read.
+//
+// An EMPTY value is deliberately NOT treated as unparseable input needing a diagnostic. Nothing
+// falls back for it on its own: `process.env["PAGEINDEX_BASE_URL"] ?? DEFAULT_BASE_URL` only
+// substitutes DEFAULT_BASE_URL when the variable is ABSENT, and an empty string is present, so
+// without this the empty case reached `new URL("")` and produced exactly the unnamed "Invalid
+// URL" this function exists to fix, for a setting where that failure has a specific known
+// cause: `PAGEINDEX_BASE_URL=` (no value after the `=`) is a normal shape for a .env line that
+// was cleared, generated from a template, or never filled in - a placeholder for "unset", not a
+// deliberate instruction to use the empty string as a URL, which cannot mean anything. Treating
+// that shape as "not overridden" and falling back to DEFAULT_BASE_URL costs nothing (the
+// default is already https and already passes `assertSecureBaseUrl`) and is strictly more
+// useful than making the operator diagnose a startup error to learn what an env-var convention
+// they already relied on (`??`) apparently didn't cover.
+export function resolveBaseUrl(raw: string | undefined): URL {
+  const value = raw === undefined || raw === "" ? DEFAULT_BASE_URL : raw;
+  try {
+    return new URL(value);
+  } catch {
+    // Echoing the value back is deliberate and safe: a base URL is a config setting, never a
+    // secret, and the API key is never part of it - the key travels only in the Authorization
+    // header `connect` builds afterwards, from its own separate parameter, well after this
+    // function has returned. But `value` is raw text straight from the environment, never
+    // validated or parsed before reaching here, so - unlike `url.host` in
+    // `assertSecureBaseUrl`, which is read out of a URL the platform already accepted - it
+    // could be arbitrarily long or carry a literal control character (a newline that forges a
+    // second stderr line, a terminal escape sequence). `safeConfigExcerpt` bounds and flattens
+    // it before it goes anywhere near a thrown message.
+    throw new Error(`PAGEINDEX_BASE_URL is not a valid URL: ${safeConfigExcerpt(value)}`);
+  }
+}
+
 // PURE. Requires an https origin for the PageIndex backend, unless the host is
 // loopback - a legitimate plain-HTTP case for local development. Guards the
 // Authorization bearer token from ever being sent in plaintext over a non-loopback
@@ -517,9 +568,10 @@ export class PageindexHttpClient implements DocLookup {
           "on purpose. Trim it at the read site and pass the trimmed value.",
       );
     }
-    // Overridable for a self-hosted backend (docs/design.md section 6).
-    const baseUrl = process.env["PAGEINDEX_BASE_URL"] ?? DEFAULT_BASE_URL;
-    const url = new URL(baseUrl);
+    // Overridable for a self-hosted backend (docs/design.md section 6). `resolveBaseUrl`
+    // handles both an absent AND an empty value falling back to the default, and gives an
+    // unparseable override a message that names PAGEINDEX_BASE_URL - see its comment.
+    const url = resolveBaseUrl(process.env["PAGEINDEX_BASE_URL"]);
     assertSecureBaseUrl(url);
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers: { Authorization: `Bearer ${apiKey}` } },
