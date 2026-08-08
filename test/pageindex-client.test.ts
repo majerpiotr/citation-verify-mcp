@@ -605,6 +605,90 @@ describe("accumulateNodeIds", () => {
   });
 });
 
+// Round-3 review (P2-3): `assertNameEcho` guarded only the get_document path, so a
+// structure page describing a DIFFERENT document was accepted whole. Its node ids would
+// then stand in for the cited document's tree, a correct node citation would fail
+// `ids.has(nodeId)`, and the citation would come back `unresolved` with a non-null title -
+// the delete-versus-fix signal pointing at a correct citation. The observed structure
+// response echoes `doc_name` back (docs/spike-b-findings.md section 5), so the same
+// defense-in-depth check the document path already makes costs nothing here.
+//
+// Defense in depth, not a live bug: a uniformly fuzzy backend trips the get_document echo
+// check first, so the harm needs a backend that matches structure lookups more loosely
+// than document lookups. Same raw, case-sensitive comparison - see the long comment above
+// `assertNameEcho` for why it must not normalize.
+describe("accumulateNodeIds - a structure page for another document is unchecked", () => {
+  const echoing = (body: Record<string, unknown>) => async () => structureResult(body);
+
+  it("throws when a part echoes an unrelated doc_name", async () => {
+    const fetchPart = echoing({
+      success: true,
+      doc_name: "other.pdf",
+      structure: [{ title: "A", node_id: "0000" }],
+    });
+    await expect(accumulateNodeIds("report.pdf", fetchPart)).rejects.toThrow();
+  });
+
+  it("throws when the echoed doc_name differs only in case", async () => {
+    const fetchPart = echoing({
+      success: true,
+      doc_name: "Report.pdf",
+      structure: [{ title: "A", node_id: "0000" }],
+    });
+    await expect(accumulateNodeIds("report.pdf", fetchPart)).rejects.toThrow();
+  });
+
+  // The direction that produces the false `unresolved`: a LATER part switching documents
+  // must not leave the ids collected so far standing in for the whole tree.
+  it("throws when a later part echoes a different doc_name, never returning a partial set", async () => {
+    const fetchPart = async (part: number) => {
+      if (part === 1) {
+        return structureResult({
+          success: true,
+          doc_name: "report.pdf",
+          structure: [{ title: "A", node_id: "0000" }],
+          pagination: { has_more: true },
+        });
+      }
+      return structureResult({
+        success: true,
+        doc_name: "other.pdf",
+        structure: [{ title: "B", node_id: "0001" }],
+      });
+    };
+    await expect(accumulateNodeIds("report.pdf", fetchPart)).rejects.toThrow();
+  });
+
+  it("accepts a part that echoes the requested name exactly", async () => {
+    const fetchPart = echoing({
+      success: true,
+      doc_name: "report.pdf",
+      structure: [{ title: "A", node_id: "0000" }],
+    });
+    await expect(accumulateNodeIds("report.pdf", fetchPart)).resolves.toEqual(new Set(["0000"]));
+  });
+
+  // Only a PRESENT echo is a check that could not run. `doc_name` is not guaranteed by any
+  // schema this server controls, and a page that omits it is the shape every existing node
+  // check already works against - throwing on absence would turn working node verification
+  // into `unchecked` wholesale, which is the failure mode where the tool stops verifying.
+  it("accepts a part that carries no doc_name at all", async () => {
+    const fetchPart = echoing({ success: true, structure: [{ title: "A", node_id: "0000" }] });
+    await expect(accumulateNodeIds("report.pdf", fetchPart)).resolves.toEqual(new Set(["0000"]));
+  });
+
+  // A present echo that is not a string says nothing about which document this page
+  // belongs to either, so it is ambiguous rather than absent.
+  it("throws when the echoed doc_name is present but not a string", async () => {
+    const fetchPart = echoing({
+      success: true,
+      doc_name: 42,
+      structure: [{ title: "A", node_id: "0000" }],
+    });
+    await expect(accumulateNodeIds("report.pdf", fetchPart)).rejects.toThrow();
+  });
+});
+
 describe("assertSecureBaseUrl", () => {
   it("accepts the default https origin", () => {
     expect(() => assertSecureBaseUrl(new URL("https://api.pageindex.ai/mcp"))).not.toThrow();

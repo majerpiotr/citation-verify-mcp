@@ -225,10 +225,15 @@ export function interpretGetDocument(res: unknown): DocLookupResult {
 // in the other normal form, and record in docs/spike-b-findings.md whether it is found and what
 // `name` comes back. If it turns out the backend normalizes for matching, that is a published
 // contract change (README's "literal file name") and not a change to this comparison alone.
-function assertNameEcho(requested: string, returned: string): void {
+//
+// Both lookup paths use this: `getDocument` on the confirmed name, and `parseStructurePage`
+// on the `doc_name` a structure page echoes. `toolName` only names the caller in the
+// message; the comparison is deliberately the same one on both paths, so there is one echo
+// rule to audit rather than two that can drift apart.
+function assertNameEcho(requested: string, returned: string, toolName = "get_document"): void {
   if (requested === returned) return;
   throw new Error(
-    `get_document was asked for "${requested}" but reported a document named "${returned}"; ` +
+    `${toolName} was asked for "${requested}" but reported a document named "${returned}"; ` +
       "names are matched literally and case-sensitively, so this is not a usable answer " +
       "about the document that was cited",
   );
@@ -335,6 +340,29 @@ function parseStructurePage(res: unknown, docName: string): StructurePage {
   if (!isPlainObject(parsed) || !("structure" in parsed)) {
     throw new Error(
       `get_document_structure for "${docName}" returned an unrecognized payload: ${excerpt(text)}`,
+    );
+  }
+  // The same defense in depth `getDocument` applies to the document lookup, on the path
+  // that decides whether a cited NODE exists. The observed structure response echoes
+  // `doc_name` back (docs/spike-b-findings.md section 5); a page describing a DIFFERENT
+  // document would contribute that document's node ids, a correct node citation would then
+  // fail `ids.has(nodeId)`, and the result would be `unresolved` with a non-null title -
+  // "the document is real, fix the node" - about a citation that is right. Throwing makes
+  // it `unchecked` instead (CLAUDE.md hard rule 4).
+  //
+  // Only a PRESENT echo is checked. `doc_name` is not guaranteed by any schema this server
+  // controls, and a page that omits it is the shape node verification already works
+  // against, so throwing on absence would turn working node checks into `unchecked`
+  // wholesale - the failure mode where the tool verifies nothing. A present echo that is
+  // not a string is not an omission though: it says nothing about which document this page
+  // belongs to, which is the ambiguity, not the absence.
+  const echoedName = parsed["doc_name"];
+  if (typeof echoedName === "string") {
+    assertNameEcho(docName, echoedName, "get_document_structure");
+  } else if (echoedName !== undefined) {
+    throw new Error(
+      `get_document_structure for "${docName}" echoed a doc_name that is not a string, ` +
+        `so which document this page describes is ambiguous: ${excerptOf(echoedName)}`,
     );
   }
   return { structure: parsed["structure"], hasMore: shouldFetchNextStructurePart(parsed["pagination"]) };
