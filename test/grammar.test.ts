@@ -1537,10 +1537,18 @@ describe("extractCitations - the node_id: and bracket-tag paths agree when the i
   //
   // What the two paths guarantee, now pinned rather than asserted: they agree on whether the
   // id names a checkable document, which is the only part of the answer that can lead to a
-  // deletion. They are NOT byte-identical, and the last test here pins the one place they
-  // differ: a bracket value is terminated by "]", so a trailing "." or ":" inside it is part
-  // of what the author wrote, while the same character in prose is sentence punctuation and
-  // is stripped. That difference only ever changes an `unchecked` token's text.
+  // deletion, AND on the text of the id itself once trailing punctuation is stripped.
+  //
+  // Round-3 review (P2-4): that second half used to be untrue, and this block pinned the
+  // divergence instead - only the prose path stripped, so "[node: 0003.]" and
+  // "node_id: 0003." produced two citations with different tokens. The code comment on the
+  // bracket path meanwhile promised the opposite ("an equivalent node_id: and bracket-tag
+  // citation for the same id dedupe into one"), which is the guarantee a consuming agent
+  // actually sees: one claim, cited twice in the two syntaxes one draft mixes, must not be
+  // reported as two unverifiable citations. Neither path reports a document, so the old
+  // behaviour was never a deletion risk - it was a broken promise about the output shape, and
+  // it is the bracket path that gave way, because a trailing "." is sentence punctuation in
+  // both syntaxes and no observed id ends in one.
   it("checks the document in both syntaxes when the id is a standalone name", () => {
     const expected = [{ token: "report.pdf", docName: "report.pdf", pages: null, nodeId: null }];
     expect(extractCitations("The pointer is node_id: report.pdf here.")).toEqual(expected);
@@ -1565,17 +1573,26 @@ describe("extractCitations - the node_id: and bracket-tag paths agree when the i
     ]);
   });
 
-  it("carries a trailing dot only where the syntax makes it part of the id", () => {
-    // The one remaining difference between the two paths, pinned so the claim above is
-    // defended rather than asserted: inside brackets the "]" ends the value, so a trailing
-    // "." belongs to the id; in prose it ends the sentence and is stripped. Neither reports a
-    // document, so neither can cause a deletion.
-    expect(extractCitations("[node: 0003.] here.")).toEqual([
-      { token: "node_id:0003.", docName: null, pages: null, nodeId: "0003." },
-    ]);
-    expect(extractCitations("The pointer is node_id: 0003. Here.")).toEqual([
+  it("strips trailing punctuation in both syntaxes, so the same id reads the same either way", () => {
+    const expected = [{ token: "node_id:0003", docName: null, pages: null, nodeId: "0003" }];
+    expect(extractCitations("[node: 0003.] here.")).toEqual(expected);
+    expect(extractCitations("The pointer is node_id: 0003. Here.")).toEqual(expected);
+  });
+
+  it("dedupes an equivalent pair written one in each syntax, as the canonical token promises", () => {
+    // The consequence the divergence actually cost, and the reason this is worth a fix at
+    // all: a draft that cites one unverifiable claim in both syntaxes - the ordinary way a
+    // tag and a prose reference end up beside each other - reported it twice.
+    expect(extractCitations("See node_id: 0003. And [node: 0003.] too.")).toEqual([
       { token: "node_id:0003", docName: null, pages: null, nodeId: "0003" },
     ]);
+  });
+
+  it("drops a bracket tag left empty by the strip, exactly as the prose path already does", () => {
+    // An id of pure punctuation is not an id in either syntax. The prose path has always
+    // dropped it ("Nothing left after stripping"); the bracket path reported it verbatim.
+    // Dropping moves an entry from `unchecked` to silence, never towards `unresolved`.
+    expect(extractCitations("See [node: ...] and node_id: ... here.")).toEqual([]);
   });
 });
 

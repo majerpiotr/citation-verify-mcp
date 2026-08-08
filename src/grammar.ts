@@ -1076,9 +1076,21 @@ export function extractCitations(text: string): Citation[] {
     if (groupSpan && namesStandaloneDoc(docStarts, quotedStarts, groupSpan[0], groupSpan[1]))
       continue;
     if (groupSpan) reserveSpan(idSpans, groupSpan[0], groupSpan[1]);
+    // Round-3 review (P2-4): the same strip the node_id: path applies, for the same reason.
+    // A trailing "." is sentence punctuation in both syntaxes - "[node: 0003.]" is a tag at
+    // the end of a sentence, not a citation of a node whose id ends in a dot - and stripping
+    // it in only one of them broke the guarantee this token shape exists to keep: an
+    // equivalent node_id: and bracket-tag citation for the same id must dedupe into ONE, and
+    // "node_id:0003" beside "node_id:0003." does not. That is the ordinary shape of a draft
+    // that mixes the two syntaxes, and it reported one unverifiable claim twice. Neither path
+    // reports a document, so nothing here can lead to a deletion either way.
+    const id = stripTrailingPunctuation(value);
+    // Nothing left after stripping ("[node: ...]"): not a citation, exactly as in prose. The
+    // span stays reserved - those characters are still the tag's own text, not a document.
+    if (!id) continue;
     instances.push({
       index: start,
-      citation: { token: `node_id:${value}`, docName: null, pages: null, nodeId: value },
+      citation: { token: `node_id:${id}`, docName: null, pages: null, nodeId: id },
     });
   }
 
