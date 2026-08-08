@@ -278,25 +278,46 @@ interface StructurePage {
   hasMore: boolean;
 }
 
-// PURE. Decides whether another get_document_structure page must be fetched.
+// PURE, and it THROWS - the throw is part of the contract, not an accident. Decides
+// whether another get_document_structure page must be fetched.
 //
 // Observed live against a real single-part document: the backend OMITS `pagination`
 // entirely when the outline fits in one part - it is not `{has_more:false}`, the key
-// is simply absent. So absence means "that was the last part", not "unreadable".
-// Only an explicit `pagination.has_more === true` means "fetch another page"; a
-// missing pagination block, a non-object pagination, or any `has_more` that isn't
-// the literal `true` all mean stop and return what has been collected so far. This is
-// NOT a weakening of the truncation guard below: it only distinguishes "this response
-// legitimately has no more parts" from "a part was cut off mid-walk", and only the
-// latter is dangerous enough to throw over.
+// is simply absent. So absence means "that was the last part", not "unreadable", and it
+// has to keep meaning that: treating it as ambiguous would make every node check on a
+// normal (single-part) document `unchecked`. A `pagination` that is not an object at all
+// is read the same way for the same reason - it carries no `has_more` to disagree with,
+// and the observed shape for "no more parts" is the field simply not being there.
+//
+// A PRESENT `has_more` that is neither absent nor a boolean is a different case, and it
+// used to be folded into "stop" (round-3 review, P0-2). That is the dangerous direction:
+// `accumulateNodeIds` would return a PARTIAL node id set, a real node in the part that was
+// never fetched would look absent, and the citation would come back `unresolved` with a
+// NON-NULL title - "the document is real, fix the node" - on correct input. One backend
+// serializer change (`"true"`, `1`, a renamed key nested under a value) would do that to
+// the tail of every multi-part outline at once, and silently. So it throws, and the
+// citation becomes `unchecked` (CLAUDE.md hard rule 4) - exactly how `getResultEnvelope`
+// treats a non-boolean `isError`.
+//
+// The decision lives here rather than in `parseStructurePage` because this function is
+// exported: a caller that reads a pagination block through it must not be handed `false`
+// for a block nobody could read.
 export function shouldFetchNextStructurePart(pagination: unknown): boolean {
-  return isPlainObject(pagination) && pagination["has_more"] === true;
+  if (!isPlainObject(pagination)) return false;
+  const hasMore = pagination["has_more"];
+  if (hasMore !== undefined && typeof hasMore !== "boolean") {
+    throw new Error(
+      `get_document_structure returned a non-boolean pagination.has_more, which is ambiguous: ${excerptOf(pagination)}`,
+    );
+  }
+  return hasMore === true;
 }
 
 // Parses one page of get_document_structure. The `structure` array must be readable -
-// a page whose structure can't be read is genuinely ambiguous (see collectNodeIds),
-// but a missing or absent pagination block is not: it is the backend's normal way of
-// saying "no more parts" (see shouldFetchNextStructurePart above). An errored page must
+// a page whose structure can't be read is genuinely ambiguous (see collectNodeIds), and
+// so is a pagination block that is there but says something unreadable, which
+// `shouldFetchNextStructurePart` throws over. An ABSENT pagination block is neither: it is
+// the backend's normal way of saying "no more parts" (see that function). An errored page must
 // not have a `structure` key read out of it even if the body happens to carry one -
 // the isError channel is not a positive statement about the document's structure.
 function parseStructurePage(res: unknown, docName: string): StructurePage {

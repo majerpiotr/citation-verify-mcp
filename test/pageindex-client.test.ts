@@ -410,10 +410,35 @@ describe("shouldFetchNextStructurePart", () => {
     expect(shouldFetchNextStructurePart(42)).toBe(false);
   });
 
-  it("stops when has_more is present but not literal true", () => {
-    expect(shouldFetchNextStructurePart({ has_more: "true" })).toBe(false);
-    expect(shouldFetchNextStructurePart({ has_more: 1 })).toBe(false);
+  it("stops when pagination is present but carries no has_more key at all", () => {
     expect(shouldFetchNextStructurePart({})).toBe(false);
+    expect(shouldFetchNextStructurePart({ total_parts: 3 })).toBe(false);
+  });
+
+  // Round-3 review (P0-2): a present `has_more` that is neither absent nor a boolean used
+  // to be read as "last part", so accumulateNodeIds returned a PARTIAL node id set and a
+  // real node living in a later part came back `unresolved` with a NON-NULL title - "the
+  // document is real, fix the node" - on a correct citation. One backend serializer change
+  // would fail every node citation in the tail of every multi-part outline at once, and
+  // silently. Absence is the observed "no more parts" shape; present-but-unreadable is not
+  // a statement about anything, so it must throw, exactly as getResultEnvelope treats a
+  // non-boolean isError.
+  describe("a present but unreadable has_more is ambiguous, never 'last part'", () => {
+    const unreadable: [string, unknown][] = [
+      ["the string 'true'", "true"],
+      ["the string 'false'", "false"],
+      ["the number 1", 1],
+      ["the number 0", 0],
+      ["null", null],
+      ["an object", {}],
+      ["an array", []],
+    ];
+
+    for (const [label, hasMore] of unreadable) {
+      it(`throws when has_more is ${label}`, () => {
+        expect(() => shouldFetchNextStructurePart({ has_more: hasMore })).toThrow();
+      });
+    }
   });
 });
 
@@ -543,6 +568,20 @@ describe("accumulateNodeIds", () => {
         },
         true,
       );
+    await expect(accumulateNodeIds("some-doc.pdf", fetchPart)).rejects.toThrow();
+  });
+
+  // The consequence of P0-2 in the place where it actually bites: an unreadable `has_more`
+  // must not end the walk with the ids collected so far, because a real node in the part
+  // that was never fetched then looks absent and the citation comes back `unresolved` with
+  // a NON-NULL title on correct input.
+  it("throws instead of returning a partial set when has_more is present but unreadable", async () => {
+    const fetchPart = async (part: number) =>
+      structureResult({
+        success: true,
+        structure: [{ title: `Node ${part}`, node_id: `000${part}` }],
+        pagination: { has_more: "true" },
+      });
     await expect(accumulateNodeIds("some-doc.pdf", fetchPart)).rejects.toThrow();
   });
 
