@@ -80,6 +80,30 @@ export function redactSecret(text: string, secret: string): string {
   return text.split(secret).join("***");
 }
 
+// Bound on the rendered failure, in characters. An MCP host captures a stdio server's
+// stderr into its log files, and the text below is BACKEND-CONTROLLED (see the flattening
+// note), so a large response body must not flood them. Deliberately the same 400 as
+// `MAX_LOG_LINE_CHARS` in src/resolver.ts and `MAX_ERROR_CHARS` in src/pageindex-client.ts:
+// with equal budgets the client's own cap over this output is exactly idempotent (it
+// re-slices to the same 400 characters and re-appends the same marker) rather than a
+// double-truncation that would eat into the marker.
+const MAX_RENDERED_FAILURE_CHARS = 400;
+
+// Collapses untrusted text to a single printable line: control characters (which could
+// forge a second log line or inject a terminal escape sequence) become spaces, runs of
+// whitespace collapse, and the ends are trimmed. Hygiene, NOT redaction - `redactSecret` is
+// the only thing that removes a secret.
+//
+// This is a deliberate second copy of the routine src/resolver.ts keeps privately for its
+// own stderr line, not an import: exporting the resolver's copy would make this module -
+// which pageindex-client.ts depends on - depend on the resolver, inverting the layering, and
+// a shared module for four lines that only two callers want was judged the larger change of
+// the two. The duplication is bounded and both copies are pinned by tests; if a third caller
+// ever needs it, that is the point to move it into one module both can import.
+function flattenToOneLine(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
 // How many `cause` levels are rendered below the top-level error. Deep enough for
 // undici's real chains (fetch failed -> connect error -> TLS error), shallow enough that
 // a pathological chain cannot flood stderr.
@@ -112,6 +136,16 @@ function describeOneLevel(value: unknown, secret: string): string {
  * an absurdly deep one both terminate with a marker instead of looping or flooding.
  * `secret` is always the caller's own in-scope value, threaded straight from a local
  * variable; this function holds no state.
+ *
+ * The result is also ONE line and length-capped, because redaction alone was not enough
+ * here. The text is not merely third-party, it is BACKEND-CONTROLLED: the SDK's
+ * `StreamableHTTPClientTransport` throws `Error POSTing to endpoint: ${raw response body}`
+ * from inside `client.connect`, and src/index.ts hands what this returns straight to
+ * `exitAfterStderr`. A review reproduced one startup failure rendering 250 KB across three
+ * stderr lines - CR/LF, an `ESC[2J`, and a forged copy of the resolver's own log-line
+ * format - into the files an MCP host captures. That is availability and log forging, not a
+ * wrong verdict, but it is free to close: same hygiene as `logLookupFailure` in
+ * src/resolver.ts, on the one other path that prints untrusted text.
  */
 export function describeStartupFailure(err: unknown, secret: string): string {
   const levels: string[] = [];
@@ -136,5 +170,20 @@ export function describeStartupFailure(err: unknown, secret: string): string {
     current = current.cause;
   }
 
-  return levels.join(" <- caused by ");
+  // Hygiene runs LAST, over the joined rendering, and never in place of the per-level
+  // redaction above - that pass is the one that matches the key as given, and it must see
+  // the message untouched.
+  //
+  // Redaction then runs a SECOND time, on the flattened text. Flattening rewrites the
+  // string, and a rewrite after redaction can reassemble the secret out of a form the
+  // first pass could not match: a key with an interior space is legal in a header value
+  // and accepted by `isUsableApiKey`, so a message quoting it with a tab or a newline
+  // where the space belongs becomes the literal key the moment whitespace collapses. The
+  // second pass costs one scan of a bounded string and closes that.
+  //
+  // The cap comes after both, never before: truncating an unredacted string can cut the
+  // secret in half, and `redactSecret` matches the whole value, so the surviving prefix
+  // would then pass through untouched - half a credential printed to a log is still a leak.
+  const flat = redactSecret(flattenToOneLine(levels.join(" <- caused by ")), secret);
+  return flat.length > MAX_RENDERED_FAILURE_CHARS ? `${flat.slice(0, MAX_RENDERED_FAILURE_CHARS)}...` : flat;
 }

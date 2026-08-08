@@ -255,4 +255,61 @@ describe("describeStartupFailure", () => {
         "<- caused by Error: level-3 <- caused by Error: level-4 <- caused by [cause chain truncated]",
     );
   });
+
+  // The message rendered here is BACKEND-CONTROLLED, not merely third-party: the SDK's
+  // `StreamableHTTPClientTransport` throws `Error POSTing to endpoint: ${raw response body}`
+  // from inside `client.connect`, so a backend or an intercepting proxy writes this string
+  // verbatim, and src/index.ts hands it straight to `exitAfterStderr` - into the log files an
+  // MCP host captures. Redaction alone is not enough for that: with the control characters
+  // intact, one startup failure was reproduced rendering 250 KB across THREE stderr lines,
+  // one of them a forged copy of the resolver's own `citation-verify-mcp: ...` log format.
+  // Same hygiene as `logLookupFailure` in src/resolver.ts, for the same reason.
+  it("flattens control characters, so a hostile message cannot forge a second stderr line", () => {
+    const err = new Error(
+      'Error POSTing to endpoint: {"detail":"nope"}\r\n\u001b[2Jcitation-verify-mcp: ' +
+        'lookup for "real-doc.pdf" could not be checked: nothing is wrong\n',
+    );
+    const rendered = describeStartupFailure(err, "pi-FAKE-SECRET");
+    expect(rendered).toBe(
+      'Error: Error POSTing to endpoint: {"detail":"nope"} [2Jcitation-verify-mcp: ' +
+        'lookup for "real-doc.pdf" could not be checked: nothing is wrong',
+    );
+    expect(/[\u0000-\u001f\u007f-\u009f]/.test(rendered)).toBe(false);
+  });
+
+  it("caps an absurdly long message, so a backend cannot flood the host's log files", () => {
+    const rendered = describeStartupFailure(
+      new Error(`Error POSTing to endpoint: ${"padding ".repeat(20_000)}`),
+      "pi-FAKE-SECRET",
+    );
+    // 400 characters of message plus the truncation marker.
+    expect(rendered.length).toBe(403);
+    expect(rendered.startsWith("Error: Error POSTing to endpoint: padding")).toBe(true);
+    expect(rendered.endsWith("...")).toBe(true);
+  });
+
+  // Hygiene must not cost redaction: the key still has to be gone from a message that is
+  // ALSO flattened and capped. Asserted on a boolean and on the marker, so a failure here
+  // cannot print the value it is guarding.
+  it("still redacts the key in a message that is flattened and capped as well", () => {
+    const secret = "pi-FAKE-SECRET-abcdef";
+    const err = new Error(`Error POSTing to endpoint:\r\nBearer ${secret}\n${"pad ".repeat(20_000)}`);
+    const rendered = describeStartupFailure(err, secret);
+    expect(rendered.includes(secret)).toBe(false);
+    expect(rendered.includes("***")).toBe(true);
+  });
+
+  // Flattening REWRITES the text, and any rewrite after redaction can in principle
+  // reassemble the secret out of a form the redaction pass did not match. A key carrying an
+  // interior space is accepted by `isUsableApiKey` (it is legal in a header value and is not
+  // a placeholder), so a message quoting it with a tab or a newline where the space belongs
+  // becomes the literal key the moment whitespace is collapsed. Redaction therefore has to
+  // run again on the flattened text - never instead of the per-level pass, which stays the
+  // one that matches the key as given.
+  it("redacts a key that only becomes literal once the message is flattened", () => {
+    const secret = "pi FAKE SECRET";
+    expect(isUsableApiKey(secret)).toBe(true);
+    const rendered = describeStartupFailure(new Error("Headers: Bearer pi\tFAKE\nSECRET"), secret);
+    expect(rendered.includes(secret)).toBe(false);
+  });
 });
