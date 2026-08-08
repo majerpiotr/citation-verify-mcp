@@ -116,6 +116,7 @@ function getResultEnvelope(res: unknown, toolName: string): ResultEnvelope {
 //   - `success: true` -> a real document. `page_count` maps to `pageCount`; missing or
 //     non-numeric becomes `null` without throwing - the document still exists.
 //   - `isError: true` whose body parses to an object with `errorCode === "NOT_FOUND"`
+//     and does NOT contradict itself by also asserting success or naming a document
 //     -> a real absence, positively stated by the backend.
 //   - anything else - a throw, an unparseable body, an isError with a different or
 //     missing code, a body that isn't an object - is ambiguous and THROWS, so the
@@ -154,6 +155,32 @@ export function interpretGetDocument(res: unknown): DocLookupResult {
   }
 
   if (isError && parsed["errorCode"] === "NOT_FOUND") {
+    // The mirror of the `!isError` guard above, and the only branch that can produce the
+    // delete signal (`unresolved` with `title: null`). A body that states an absence while
+    // ALSO asserting success, or while carrying a usable document name, contradicts itself:
+    // it is not the positive statement of absence that hard rule 4 requires, so it throws
+    // and the citation becomes `unchecked` instead of being deleted on the strength of a
+    // payload that simultaneously says the document exists.
+    //
+    // Deliberately TIGHT, to exactly the two signals the success branch reads. The observed
+    // NOT_FOUND body (docs/spike-b-findings.md section 4) carries `error`, `doc_name`,
+    // `similar_files` and `next_steps` - a broader "does it look like it has a payload?"
+    // heuristic would reject the normal shape and make every real absence `unchecked`,
+    // which is the failure mode where the tool catches nothing at all. `doc_name` is an
+    // echo of what was ASKED for, not a confirmation, so it is not consulted here. An empty
+    // `name` is not consulted either: the success branch already rejects it as unusable, so
+    // it is no evidence the document exists.
+    if (parsed["success"] === true) {
+      throw new Error(
+        `get_document reported NOT_FOUND alongside success: true, which is contradictory: ${excerpt(text)}`,
+      );
+    }
+    const contradictoryName = parsed["name"];
+    if (typeof contradictoryName === "string" && contradictoryName.length > 0) {
+      throw new Error(
+        `get_document reported NOT_FOUND while also naming a document, which is contradictory: ${excerpt(text)}`,
+      );
+    }
     const similarRaw = parsed["similar_files"];
     const similar =
       Array.isArray(similarRaw) && similarRaw.every((s) => typeof s === "string") ? similarRaw : [];

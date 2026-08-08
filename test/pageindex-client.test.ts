@@ -191,6 +191,90 @@ describe("interpretGetDocument", () => {
     expect(interpretGetDocument(res)).toEqual({ found: false, similar: [] });
   });
 
+  // Round-3 review (P0-1): the success branch guards against the mirror ambiguity
+  // (`success: true` next to `isError: true` is not an unambiguous positive), but the
+  // not-found branch had no symmetric guard - so a body that said NOT_FOUND while ALSO
+  // asserting success and/or naming a document produced `found: false`, which the
+  // resolver renders as `unresolved` with `title: null`: the delete signal, from a
+  // payload that simultaneously says the document exists. Every ambiguity must throw so
+  // the citation becomes `unchecked` (CLAUDE.md hard rule 4).
+  describe("a self-contradictory not-found body is ambiguous, never a positive absence", () => {
+    it("throws when the NOT_FOUND body also asserts success", () => {
+      const res = textResult(
+        { success: true, errorCode: "NOT_FOUND", doc_name: "missing.pdf", similar_files: [] },
+        true,
+      );
+      expect(() => interpretGetDocument(res)).toThrow();
+    });
+
+    it("throws when the NOT_FOUND body also carries a usable document name", () => {
+      const res = textResult(
+        {
+          error: "Document not found.",
+          errorCode: "NOT_FOUND",
+          name: "missing.pdf",
+          doc_name: "missing.pdf",
+          similar_files: [],
+        },
+        true,
+      );
+      expect(() => interpretGetDocument(res)).toThrow();
+    });
+
+    it("throws when the NOT_FOUND body asserts success AND carries a document name", () => {
+      const res = textResult(
+        {
+          success: true,
+          name: "missing.pdf",
+          page_count: 56,
+          errorCode: "NOT_FOUND",
+          doc_name: "missing.pdf",
+          similar_files: [],
+        },
+        true,
+      );
+      expect(() => interpretGetDocument(res)).toThrow();
+    });
+
+    // The guard must stay TIGHT. The observed NOT_FOUND body (docs/spike-b-findings.md
+    // section 4) carries `error`, `doc_name`, `similar_files` and `next_steps`; none of
+    // those is a document payload, and `doc_name` in particular is an echo of what was
+    // ASKED for, not a confirmation that anything exists. A guard broad enough to reject
+    // these would make every real absence `unchecked` and the tool would catch nothing.
+    it("still reports not found for the full observed NOT_FOUND shape", () => {
+      const res = textResult(
+        {
+          error: 'Document not found. Did you mean: "some-doc.pdf"?',
+          errorCode: "NOT_FOUND",
+          doc_name: "some-dc.pdf",
+          similar_files: ["some-doc.pdf"],
+          next_steps: { hint: "list the corpus" },
+        },
+        true,
+      );
+      expect(interpretGetDocument(res)).toEqual({ found: false, similar: ["some-doc.pdf"] });
+    });
+
+    // An empty `name` is not a document payload either - the success branch already
+    // rejects it as unusable, so it cannot count as evidence the document exists here.
+    it("still reports not found when the body carries an empty name", () => {
+      const res = textResult(
+        { error: "Document not found.", errorCode: "NOT_FOUND", name: "", similar_files: [] },
+        true,
+      );
+      expect(interpretGetDocument(res)).toEqual({ found: false, similar: [] });
+    });
+
+    // `success: false` alongside NOT_FOUND is consistent, not contradictory.
+    it("still reports not found when the body asserts success: false", () => {
+      const res = textResult(
+        { success: false, error: "Document not found.", errorCode: "NOT_FOUND", similar_files: [] },
+        true,
+      );
+      expect(interpretGetDocument(res)).toEqual({ found: false, similar: [] });
+    });
+  });
+
   // The trap Spike B found: isError is the SAME channel as a backend failure. Only a
   // POSITIVE NOT_FOUND code may become `unresolved`; anything else must throw so it
   // becomes `unchecked` (CLAUDE.md hard rule 4).
