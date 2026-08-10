@@ -438,6 +438,22 @@ Both directions are known, measured and carried deliberately. Neither is a bug r
   it separated only by dashes, brackets or up to three words (`methods.pdf p.3 ->
   results.pdf p.7`, `methods.pdf p.3 (see results.pdf)`).
 
+- The list separators `and` and `or` are English, and no other language's coordinator is
+  recognized. Measured: `a.pdf p.3 and b.pdf p.7` keeps both pages, while
+  `a.pdf p.3 oraz b.pdf p.7` reports `a.pdf` with no page at all, and `i`, `lub`, `und`, `y`
+  and `et` behave the same way. The probe cannot tell a coordinator it does not know from a
+  word introducing the page's own document, so it drops the page rather than binding it to the
+  wrong one - the safe direction, but the citation still reports `resolved` with a page nobody
+  checked. A comma, a semicolon or a sentence break separates two citations correctly in any
+  language (`a.pdf p.3, b.pdf p.7`); prefer them to a conjunction outside English.
+
+  Extending the list is NOT a free fix, which is why it has not been done. Adding a word makes
+  the probe stop and bind the page LEFT, and that is the dangerous direction (a false
+  `unresolved` carrying a non-null `title`). The short coordinators collide across languages -
+  Italian `i` is a definite article, so `page 12 i libri.pdf` names an owner rather than
+  coordinating a list, and binding left there would corrupt a correct citation. Trading a
+  recoverable silence for that is the one move this grammar's allowlist direction forbids.
+
 The connector-word list (`on`, `at`, `see`), the quoted-name shape limits and the bracket-tag
 keyword acceptance are fixed choices made without corpus evidence of what real agents write.
 They may need revisiting.

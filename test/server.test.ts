@@ -931,6 +931,25 @@ describe("the prose documentation states the load-bearing claims the tool descri
     expect(grammarDoc).toMatch(/drops a page that would have bound correctly/i);
   });
 
+  // The `and`/`or` list is ENGLISH, and nothing said so. Measured: `oraz`, `i`, `lub`, `und`,
+  // `y` and `et` are all read as possibly introducing the page's owner, so `a.pdf p.3 oraz
+  // b.pdf p.7` drops the first page while the English spelling keeps it. The direction is the
+  // safe one, but the citation still reports `resolved` with a page nobody checked - silence
+  // reading as endorsement, which is the failure this whole rule exists to avoid. A reader
+  // writing in any other language has no way to know from the previous wording, and the
+  // workaround (a comma) costs nothing, so both files have to carry it.
+  it("discloses that the list separators it recognizes are English, and names the workaround", () => {
+    // `oraz` is matched bare, not as a code span: both files write it inside a longer example
+    // (`a.pdf p.3 oraz b.pdf p.7`), so requiring backticks around the word alone pins the
+    // formatting rather than the claim.
+    expect(readme).toMatch(/`and` and `or` are English[\s\S]{0,400}oraz/i);
+    expect(readme).toMatch(/comma, a semicolon or a sentence break/i);
+    expect(grammarDoc).toMatch(/`and` and `or` are English[\s\S]{0,400}oraz/i);
+    // The reason the list is not simply extended - without it a later reader "fixes" this by
+    // adding words and trades a silence for the false `unresolved` the allowlist direction bans.
+    expect(grammarDoc).toMatch(/Extending the list is NOT a free fix[\s\S]{0,600}Italian `i`/i);
+  });
+
   it("states in the grammar reference that the owner rule is structural, not a preposition list", () => {
     // The enumeration is what failed twice. If a future change reverts to a closed list of
     // prepositions, this document must not keep claiming otherwise - and the claim is the

@@ -524,6 +524,16 @@ Known and carried deliberately.
   page 12 to `methods.pdf`, which can report it `unresolved` with a non-null `title` on a
   citation that was correct. Keep a page and the name it belongs to adjacent
   (`results.pdf p.12`) and the question never arises.
+- **The list separators `and` and `or` are English, and no other language's are recognized.**
+  Writing in another language therefore loses the FIRST page of a coordinated pair: measured,
+  `a.pdf p.3 and b.pdf p.7` keeps both pages, while `a.pdf p.3 oraz b.pdf p.7` reports
+  `a.pdf` with no page at all. The same goes for `i`, `lub`, `und`, `y` and `et` - each is read
+  as possibly introducing the page's own document, so the page is dropped rather than bound to
+  the wrong one. Dropping is the safe direction, but the citation still comes back `resolved`
+  with a page nobody checked, which is the one shape that reads as a clean pass when it is not.
+  A **comma, a semicolon or a sentence break** separates two citations correctly in any
+  language (`a.pdf p.3, b.pdf p.7`), so the workaround costs nothing - prefer them to a
+  conjunction whenever the draft is not in English.
 - **`unchecked` where a check was possible:** `[node:report.pdf]` and `node_id:report.pdf`
   written with no space after the colon report an `unchecked` node id instead of checking the
   document. Safe (an `unchecked` citation is never deleted) but not what the author meant.
