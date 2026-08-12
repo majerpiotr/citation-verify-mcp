@@ -1,8 +1,8 @@
 # Spike B findings - confirmed backend behaviour
 
 > Status: complete. Run against the live backend on 2026-07-31 with a real API key.
-> These findings supersede the assumptions in `design.md` sections 3 and 5, and the
-> code shapes in `history/implementation-plan.md` Tasks 3-6.
+> These findings supersede the assumptions in `design.md` sections 3 and 5, and the code
+> shapes in the original build plan, since deleted.
 
 Every statement below was observed, not inferred. Throwaway probe scripts lived in a
 gitignored scratch directory and were not committed.

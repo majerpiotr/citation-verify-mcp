@@ -694,8 +694,8 @@ Design background lives in the repository's
 [`docs/`](https://github.com/majerpiotr/citation-verify-mcp/blob/main/docs/README.md), which
 indexes it by audience: `citation-grammar.md` for the full grammar reference, `design.md` for
 the approved design, `spike-a-findings.md` for what a real consuming application emits,
-`spike-b-findings.md` for the observed backend behaviour, and `history/` for finished records
-that are kept only because the code cites them.
+`spike-b-findings.md` for the observed backend behaviour, and `rework-plan.md` for the task
+numbers and interface names the code cites by path.
 
 ## Contributing
 

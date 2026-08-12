@@ -32,14 +32,13 @@ the hard rules; these are its evidence.
 | [`design.md`](design.md) | The approved design, since revised against both spikes. |
 | [`rework-plan.md`](rework-plan.md) | Superseded as a plan, but still cited by name from the code and tests as the source of specific rules. Carries a status banner. |
 
-## Historical record
+## What used to be here
 
-[`history/`](history/) holds documents that are finished and are kept only so the reasoning
-behind load-bearing decisions stays findable. Every one carries a banner saying so. **Do not
-implement from them and do not cite them as current behaviour.**
+A `history/` folder held the original build plan and the round 2 and round 3 audit reports.
+They were deleted: finished documents that no current file depended on, worth 1,415 lines of
+material a reader had to identify and skip. `git log -- docs/history/` still has them.
 
-| Document | Why it is still here |
-| --- | --- |
-| [`history/implementation-plan.md`](history/implementation-plan.md) | The original task-by-task build plan. |
-| [`history/code-review-round-2.md`](history/code-review-round-2.md) | Round 2 audit. Its findings were fixed before round 3 ran. |
-| [`history/code-review-round-3.md`](history/code-review-round-3.md) | Round 3 audit, the full pre-publication pass. All fifteen code findings are fixed. About two dozen code comments cite it by round and finding number (`round-3 review, P0-2`), which is why deleting it would leave those comments pointing at nothing. |
+A handful of comments in `src/` and `test/` cite a review as `(round-3 review, P0-2)`. That
+is provenance, not a pointer - each one states its own reasoning in full and reads correctly
+with no such document in the tree. Leave those citations alone; they record that an audit
+found the case, which is worth knowing even once the report is gone.
