@@ -31,6 +31,14 @@ Authoritative documents, read before starting work, in this order:
    product, not part of anyone's app. Never mention a particular host application,
    its domain, its agents, or its repo in code, comments, docs, commits, or tests. Test
    fixtures use neutral names (`real-doc`, `some-doc-id-123`), never domain-specific ones.
+   This covers PROBE RECORDS too, and that is the case it was actually breached in: a spike
+   documented real backend behaviour using the real document names it had probed with, which
+   published the contents of a private corpus and named the consuming project's domain. When
+   a finding depends on a real name, withhold the name and describe the PROPERTY that
+   mattered (length, where an edit fell, whether a word was whole). Every finding so far has
+   survived that treatment intact. Illustrative names invented for a doc are fine and are not
+   what this is about - `raport-glowny-2024.pdf` in `docs/citation-grammar.md` demonstrates
+   non-Latin scripts and came from nobody's corpus.
 2. **Never commit, print, or paste an API key.** `key.txt` is gitignored and is the
    conventional place to keep one locally; keep it that way. Never `cat`, echo, copy, or
    log its contents, and never paste a key into code, docs, tests, logs, or a chat

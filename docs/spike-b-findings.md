@@ -97,16 +97,21 @@ split, and the split decides whether an operator gets a hint or silence:
   found, and `similar_files` is `[]` - the backend goes completely silent, offering no hint
   that the document exists under a different capitalisation.
 
-Same-case typos split the same way, and WHERE the typo falls decides it. Against a real
-`konstytucja.pdf`, a hint came back for `konstytucia.pdf` (one letter substituted near the
-end), `konstytucj.pdf` (final letter dropped), `konstytucjaa.pdf` (one letter too many) and
-`konstytucja-rp.pdf` (suffix added); a hint also came back for `zwiazki-zawodowe.pdf`, a
-bare fragment of a longer real name. But `knostytucja.pdf` (the second and third letters
-transposed) and `kostytucja.pdf` (a letter dropped from the middle) both returned
-`similar_files: []`. The matcher appears to reward a shared prefix or containment, so a
-typo near the START of a name lands in the same silence as a case mismatch - and a
-transposition is the commonest keyboard typo there is. Mechanism inferred from eleven
-probes, not confirmed.
+Same-case typos split the same way, and WHERE the typo falls decides it. The probes ran
+against a real document in a private corpus. Its name is withheld and the edits are
+described instead of spelled out - the finding is about the POSITION of an edit, not about
+which letters were involved, so nothing is lost by withholding it. The stem was a single
+word of eleven letters, no digits, no separators.
+
+A hint came back for each of: one letter substituted near the END of the stem; the final
+letter dropped; one letter too many at the end; a hyphenated suffix appended. A hint also
+came back for a probe that was a bare fragment of a different, longer real name. But
+transposing the stem's second and third letters returned `similar_files: []`, and so did
+dropping a letter from its middle.
+
+The matcher appears to reward a shared prefix or containment, so a typo near the START of a
+name lands in the same silence as a case mismatch - and a transposition is the commonest
+keyboard typo there is. Mechanism inferred from eleven probes, not confirmed.
 
 None of this changes the verdict: every case above is `unresolved`. That is the point. The
 tool does not try to tell a typo from a fabrication, because the remedy is the same either
