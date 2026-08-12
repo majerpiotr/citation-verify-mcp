@@ -168,37 +168,6 @@ completely unrecognized, for two structurally different reasons: one is a syntax
 grammar has no rule for, the other names nothing the backend could look up regardless of
 syntax.
 
-## Prioritized recommendations
-
-1. **Recognize a generic bracket-tag id shape, e.g. `[node:<id>]` / `[<word>:<id>]`, and
-   route a bare id with no accompanying document name to `unchecked` rather than dropping
-   it silently.** This is the highest-value, lowest-risk change: it is the single most
-   consistently instructed format across this application's ~25 agent roles, costs nothing
-   in false-positive risk (per the tool's own citation model, an id with no document is
-   already defined as `unchecked`, never `unresolved`), and turns a currently-total blind
-   spot into at least a visible, correctly-labeled "could not verify." It would not, by
-   itself, make anything newly resolvable, since these ids do not correspond to real
-   backend node ids or file names either - but visibility beats silence, which is the
-   grammar's own stated design principle elsewhere.
-2. **Do not treat "add more regex patterns" as sufficient.** The dominant real-world gap
-   found here (Shape 2) is not a syntax the grammar failed to anticipate - it is agent
-   output that names no checkable identifier at all, confirming design.md's R1 as a live
-   risk rather than a theoretical one. The mitigation available to this project is exactly
-   what design.md already names: host-side instruction pressure demanding a resolvable
-   token, not a grammar change. This spike's evidence is a concrete argument for
-   prioritizing that guidance work (e.g., a strongly worded tool description, or example
-   citation formats surfaced to the consuming agent) alongside any grammar update.
-2b. **If a bracket-tag pattern is added, keep the keyword generic rather than hardcoding
-   a single literal like `node`.** This application alone independently invented two
-   different bracket-tag conventions (`node:` and `Source:`) for two different citation
-   families. A future host is likely to invent a third word. A configurable or
-   multi-keyword-aware pattern is more durable than chasing individual literals one at a
-   time - though widening this responsibly (without opening a false-positive path) is a
-   design decision, not a mechanical regex edit, and should be scoped as its own task.
-3. **Lower priority: no action needed for the URL-citation shape.** It is a different
-   citation family (external web sources) that this tool should not attempt to resolve
-   against PageIndex; it is out of scope by the tool's own stated purpose, not a gap.
-
 ## Limits of this evidence
 
 - **One real transcript.** All "actually observed" claims rest on a single saved run, one
