@@ -13,8 +13,21 @@ fabricated citation passes a human's eyeball test right up until someone opens i
 server closes the part of that gap that is actually decidable: does the cited document
 exist, does the cited page fall inside it, does the cited node appear in its outline.
 
-It checks **existence, not support**. A citation that resolves points at something real;
-whether that something says what the agent claims it says is out of scope.
+## Read this first
+
+Three things decide whether this tool is useful to you. None of them is a detail.
+
+- **It checks existence, not support.** A citation that resolves points at something real;
+  whether that something says what the agent claims it says is out of scope. Nothing here
+  reads a document.
+- **`total: 0` is not a clean bill of health.** `total: 0` means no citation of a recognized
+  shape was found in the draft - it is not a clean bill of health, and not proof the text has
+  no citations. On real agent output that is a routine result, not an anomaly: see
+  [Does this work on real agent output?](#does-this-work-on-real-agent-output).
+- **A failed check is never reported as a missing document.** Anything that could not be
+  established positively comes back `unchecked`, never `unresolved`, so a backend outage can
+  never make a consuming agent delete good citations. See
+  [`unresolved` vs `unchecked`](#unresolved-vs-unchecked---the-distinction-everything-rests-on).
 
 ## Requirements
 
@@ -50,43 +63,12 @@ npm run build
 }
 ```
 
-Once the package **is** published, the same integration needs no clone and no build step:
-
-```json
-{
-  "mcpServers": {
-    "citation-verify": {
-      "command": "npx",
-      "args": ["-y", "citation-verify-mcp"],
-      "env": {
-        "PAGEINDEX_API_KEY": "<your-pageindex-api-key>"
-      }
-    }
-  }
-}
-```
+Once the package **is** published, the same integration will need no clone and no build step:
+`"command": "npx"` with `"args": ["-y", "citation-verify-mcp"]`, everything else unchanged.
+That form does not work today.
 
 Either way, that is the whole integration. **Unplugging is removing the block.** There is no
 other integration point, no database, and no state kept between calls.
-
-## What leaves your machine
-
-**The draft text never leaves this process.** Extraction is entirely local: the grammar runs
-here, in this server, and the only thing sent to PageIndex is a document *name* the grammar
-extracted, plus a part number when an outline has to be paged through. Those are the complete
-request payloads:
-
-```json
-{ "doc_name": "report.pdf" }
-{ "doc_name": "report.pdf", "part": 2 }
-```
-
-Your prose, the claims around a citation, the surrounding sentences, and even the cited page
-and node numbers are never transmitted - pages are bounds-checked and nodes are matched
-locally, against the metadata that comes back. What crosses the network is the set of file
-names your agent cited, over HTTPS, to `https://api.pageindex.ai/mcp` (or to whatever
-`PAGEINDEX_BASE_URL` points at), with the API key as a bearer token. Nothing is written to
-disk, and nothing is kept between calls.
 
 ## Example
 
@@ -125,7 +107,8 @@ returns this JSON, in a text content block:
       "title": "report.pdf",
       "suggestion": "This document has 11 pages; the cited page is outside that range."
     }
-  ]
+  ],
+  "truncated": 0
 }
 ```
 
@@ -133,13 +116,11 @@ Two citations came back `unresolved` for structurally different reasons, and **`
 what says which is which.** The second has `title: null`: nothing in the corpus carries that
 name, and the backend offered no near name either - find the real file name or drop the claim.
 The third has `title: "report.pdf"`: the document is real and only the page number was
-fabricated - fix the page and keep the claim. `suggestion` explains both in English, but
-`title` is the same distinction in a field you can branch on.
+fabricated - fix the page and keep the claim.
 
-(The exact `suggestion` on the second entry is whatever the backend does or does not offer as
-a near name for that string. Here it offered none. A live corpus containing `report.pdf` may
-well answer `Did you mean "report.pdf"?` instead - the verdict is the same either way, and the
-warning below about near-name suggestions applies.)
+(The `suggestion` on the second entry is whatever the backend does or does not offer as a near
+name. Here it offered none; a live corpus may answer `Did you mean "report.pdf"?` instead. The
+verdict is the same either way, and the warning below about near-name suggestions applies.)
 
 ## Reading the result
 
@@ -182,28 +163,25 @@ ambiguity or unreadable response becomes `unchecked`. If the MCP call itself fai
 returns an MCP error result instead of the JSON above; treat every citation in the text as
 `unchecked` in that case, never as `unresolved`.
 
-Two further points that are easy to get wrong:
-
-- **`unresolved` does not always mean the document is missing.** The miss can be the
-  document, the page, or the node. A document that really is in the corpus, cited with a
-  page outside its real page count or a node absent from its outline, is reported
-  `unresolved` too - but it carries its real file name in `title`, while a document that does
-  not exist at all is `unresolved` with `title: null`. **`title` is what distinguishes the
-  two**; `suggestion` says the same thing in prose. Read `title` before deleting anything: a
-  non-null one means fix the citation, not remove the claim.
-- `total: 0` means no citation of a recognized shape was found in the draft - it is not a
-  clean bill of health, and not proof the text has no citations. See
-  [Does this work on real agent output?](#does-this-work-on-real-agent-output) below.
+**`unresolved` does not always mean the document is missing.** The miss can be the document,
+the page, or the node. A document that really is in the corpus, cited with a page outside its
+real page count or a node absent from its outline, is reported `unresolved` too - but it
+carries its real file name in `title`, while a document that does not exist at all is
+`unresolved` with `title: null`. **`title` is what distinguishes the two**; `suggestion` says
+the same thing in prose. Read `title` before deleting anything: a non-null one means fix the
+citation, not remove the claim.
 
 ### About `suggestion`
 
 `suggestion` explains a verdict; it never changes one. Every `unresolved` and every
-`unchecked` carries one. It may carry the backend's own
-near-name match (`Did you mean "report.pdf"?`), the real page count when a cited page falls
-outside it, which half of a combined page-plus-node citation failed, or why a citation could
-not be checked at all. When a document is simply not found and the backend offers no near
-name, it carries a fixed reminder that names are matched case-sensitively and that a name
-differing only in capitalisation misses silently - it never guesses a document.
+`unchecked` carries one: the backend's own near-name match (`Did you mean "report.pdf"?`), the
+real page count when a cited page falls outside it, which half of a combined page-plus-node
+citation failed, or why a citation could not be checked at all. When a document is simply not
+found and the backend offers no near name, it carries a fixed reminder that names are matched
+case-sensitively and that a name differing only in capitalisation misses silently - it never
+guesses a document. It is also set on some **`resolved`** verdicts: when PageIndex reports no
+page count for a document, the cited page is not bounds-checked and the citation still
+resolves, with `suggestion` saying the page itself was never verified.
 
 When a lookup fails outright, `suggestion` is a **fixed** explanation: the check could not
 run, that is not evidence the document is missing, and the citation must not be deleted. It
@@ -212,18 +190,16 @@ can echo a request header, and this field goes straight into a model's context. 
 error goes to this server's stderr instead (see
 [Diagnosing a failed lookup](#diagnosing-a-failed-lookup)).
 
-`suggestion` is also set on some **`resolved`** verdicts: when PageIndex reports
-no page count for a document, the cited page is not bounds-checked and the citation still
-resolves, with `suggestion` saying the page itself was never verified.
-
 **A near-name suggestion is a diagnostic, not a licence to rename a citation and keep the
 same claim.** Only existence is verified. Swapping a fabricated `missing-report.pdf` for the
 suggested `report.pdf` while leaving the sentence untouched converts a caught fabrication
 into an uncaught one: the citation now resolves, and nothing has checked whether the real
 document supports the claim.
 
+### Token shapes
+
 `token` is a **canonical** form, not the agent's verbatim text - map it back to the draft
-before acting on it. Shapes:
+before acting on it.
 
 - `<document>` - a document with no page or node.
 - `<document>#p<N>` or `<document>#p<N>-<M>` - a document with a page or page range.
@@ -279,49 +255,16 @@ and the citation still resolves without it. A citation written in any other form
 checked at all: total: 0 means nothing checkable was found, not that the draft is clean.
 ```
 
-Acting on the result, generically:
+### Acting on the result
 
 - For every `unresolved` citation: **read `title` first.** Non-null means the document exists
-  and only the cited page or node missed - correct that, the source is real and the claim
-  should stay (`suggestion` says which half missed). `null` means nothing in the corpus
-  carries that name: remove the claim, or search again and replace it with a citation that
-  actually resolves.
+  and only the cited page or node missed - correct that and keep the claim (`suggestion` says
+  which half missed). `null` means nothing in the corpus carries that name: remove the claim,
+  or search again and replace it with a citation that actually resolves.
 - For every `unchecked` citation: **leave it in place**, optionally with a note. Do not
   delete it. The corpus was never consulted for it, so it may well be valid. Deleting
   `unchecked` citations during a backend outage is the exact failure this server exists to
   prevent.
-
-## Does this work on real agent output?
-
-**Read this before adopting.** It is the single biggest risk to this tool being useful to
-you, and it is not hypothetical.
-
-One real multi-agent application using PageIndex was investigated (read-only, ~25 agent
-roles). Its corpus-citing roles were uniformly instructed to use a single citation format.
-(One role of the ~25, which researches external web sources rather than the corpus, was
-instructed to use a different bracket-tag convention of its own - evidence that one
-application can carry more than one citation convention at a time, invented independently by
-whoever wrote each agent's instructions.) In the one real saved transcript available, **the
-instructed format appeared zero
-times.** What the agents actually wrote instead was free-text prose naming a source by its
-human-readable display title, with no file name, no id and no page - naming nothing any
-grammar could look up. The full write-up is in
-[`docs/spike-a-findings.md`](docs/spike-a-findings.md).
-
-Consequences you should plan for:
-
-- `total: 0` on a draft full of confident, unverifiable claims is a **routine** outcome, not
-  an anomaly. It means nothing checkable was found, not that the text is clean.
-- An instructed citation format is not a guaranteed one. Before relying on this tool,
-  check what your agents actually emit in real output, not what their prompts say they
-  will.
-- The mitigation is upstream instruction pressure (see
-  [Instructing your agent](#instructing-your-agent)), not more regex. No amount of pattern
-  matching fixes an agent that names no checkable source at all.
-
-That evidence is one application and one transcript. It is not a general law about all
-agents - but it is concrete counter-evidence against assuming yours follow their
-instructions.
 
 ## Configuration
 
@@ -337,19 +280,24 @@ loopback host, where plain `http:` is accepted for local development: `localhost
 any other host (`http://pageindex.internal:3000/mcp`) is rejected and the server exits;
 terminate TLS in front of it, or run it on loopback.
 
+The server's API key must point at the same PageIndex account the citing agent draws its
+citations from. If it points at a different account, every citation the agent makes comes
+back `unresolved` - a false negative that leads a consuming agent to delete good citations.
+
 ### Startup validation
 
 The server refuses to start - logging to stderr and exiting non-zero - if
 `PAGEINDEX_API_KEY` is missing, blank, looks like an unfilled placeholder (an unsubstituted
 `${...}` reference, anything still wrapped in angle brackets - including the
-`<your-pageindex-api-key>` the config blocks above ship - or a literal `your-api-key`-style
-value, with or without a product word in the middle), or carries a control character
-*inside* the value. That last case is the easy one to misread: a key that got line-wrapped on
-paste, or a two-line key file read whole, is a real key the server still refuses, because no
-control character can legally sit in an `Authorization` header. Surrounding whitespace is
-trimmed first, so a trailing newline alone is harmless; it is an interior `\n` or `\r` that is
-fatal. The startup message names "placeholder" among the causes, so check for a stray line
-break before concluding the key itself is wrong.
+`<your-pageindex-api-key>` the config block above ships - or a literal `your-api-key`-style
+value), or carries a control character *inside* the value.
+
+That last case is the easy one to misread: a key that got line-wrapped on paste, or a
+two-line key file read whole, is a real key the server still refuses, because no control
+character can legally sit in an `Authorization` header. Surrounding whitespace is trimmed
+first, so a trailing newline alone is harmless; it is an interior `\n` or `\r` that is fatal.
+The startup message names "placeholder" among the causes, so check for a stray line break
+before concluding the key itself is wrong.
 
 A non-https, non-loopback `PAGEINDEX_BASE_URL` is refused the same way. An invalid but
 plausible-looking key fails when the server connects to PageIndex, which is reported to the
@@ -367,18 +315,12 @@ citation-verify-mcp: document for "report.pdf" could not be checked: TypeError: 
 An MCP host captures a stdio server's stderr into its own log files, so that is where the
 diagnosis lands - never in the tool result a model reads. One line per distinct document name
 per call, for the existence lookup (`document`) and for the outline lookup (`document
-structure`) alike. The line is redacted (the API key is scrubbed at the one layer that holds
-it), stripped of control characters, and capped at 400 characters, so a large error body
-cannot flood a host's log. Nothing goes to stdout: stdout carries the MCP protocol stream.
+structure`) alike, redacted (the API key is scrubbed at the one layer that holds it),
+stripped of control characters, and capped at 400 characters so a large error body cannot
+flood a host's log. Nothing goes to stdout: stdout carries the MCP protocol stream.
 
 Without that line, an outage, a key pointing at the wrong account and a backend change are
 indistinguishable - all three produce a sweep of `unchecked` verdicts.
-
-### Account alignment
-
-The server's API key must point at the same PageIndex account the citing agent draws its
-citations from. If it points at a different account, every citation the agent makes comes
-back `unresolved` - a false negative that leads a consuming agent to delete good citations.
 
 ## How it works
 
@@ -398,9 +340,31 @@ back `unresolved` - a false negative that leads a consuming agent to delete good
 What is never verified, at any step: whether the cited document actually supports the claim
 the agent makes about it. This tool proves a source exists; it does not read it.
 
+### What leaves your machine
+
+**The draft text never leaves this process.** Extraction is entirely local: the grammar runs
+here, in this server, and the only thing sent to PageIndex is a document *name* the grammar
+extracted, plus a part number when an outline has to be paged through. Those are the complete
+request payloads:
+
+```json
+{ "doc_name": "report.pdf" }
+{ "doc_name": "report.pdf", "part": 2 }
+```
+
+Your prose, the claims around a citation, the surrounding sentences, and even the cited page
+and node numbers are never transmitted - pages are bounds-checked and nodes are matched
+locally, against the metadata that comes back. What crosses the network is the set of file
+names your agent cited, over HTTPS, to `https://api.pageindex.ai/mcp` (or to whatever
+`PAGEINDEX_BASE_URL` points at), with the API key as a bearer token. Nothing is written to
+disk, and nothing is kept between calls.
+
 ## What counts as a citation
 
-The grammar is fixed, not learned, and deliberately narrow. In summary:
+The grammar is fixed, not learned, and deliberately narrow. This is the summary; **the full
+reference is [`docs/citation-grammar.md`](docs/citation-grammar.md)** - every recognized shape
+in exhaustive detail, the exact character and separator rules, the edge cases, and worked
+examples of where the grammar over-reaches and under-reaches.
 
 - **Only `.pdf` documents are recognized.** A citation to any other extension (`.docx`,
   `.txt`, `.md`, ...) is not extracted at all.
@@ -413,12 +377,11 @@ The grammar is fixed, not learned, and deliberately narrow. In summary:
   different line, or phrased in words ("page five"), is not read. **A page phrase that names
   its own document** - any `.pdf` name following the page, separated from it by at most three
   connecting words and any amount of whitespace, quotes, brackets, emphasis marks or dashes,
-  as in `methods.pdf, page 12 of results.pdf` or `page 12 of the 'results.pdf'` - binds to
-  neither: the page is dropped and both documents are checked without it, rather than the
-  page being bound to the wrong document. `and`, `or`, punctuation, a line break before the
-  connecting words, or a fourth word ends the phrase, and the page binds to the document on
-  its left again - which is what keeps `methods.pdf p.3 and results.pdf p.7` and a list with
-  one citation per line binding each page correctly.
+  as in `methods.pdf, page 12 of results.pdf` - binds to neither: the page is dropped and both
+  documents are checked without it, rather than the page being bound to the wrong document.
+  `and`, `or`, punctuation, a line break before the connecting words, or a fourth word ends
+  that phrase and the page binds left again, which is what keeps `methods.pdf p.3 and
+  results.pdf p.7` and a one-citation-per-line list binding each page correctly.
 - **A node is optional**: `node_id: 0007` or `node_id=0007` binds to the nearest document
   mentioned in the same sentence, in either order. A document cited with both a page and a
   node produces one combined citation, not two.
@@ -456,39 +419,45 @@ The grammar is fixed, not learned, and deliberately narrow. In summary:
 Anything outside those shapes is not checked, and the omission is silent rather than
 reported: that is what `total: 0` on a draft full of citations means.
 
-**The full reference is [`docs/citation-grammar.md`](docs/citation-grammar.md)** - every
-recognized shape in exhaustive detail, the exact character and separator rules, the edge
-cases, and worked examples of where the grammar over-reaches and under-reaches.
-
-## Non-goals
-
-These are considered decisions, not gaps. Each was scoped out deliberately.
-
-- **No corpus discovery.** This server will not list, browse or search the corpus to help an
-  agent find out what document names exist. Its job is to answer "does this citation
-  resolve", not to help an agent write a citation. An agent that needs a real file name
-  should get it from whatever retrieval step produced the claim in the first place; handing
-  an agent a list of real names to choose from is a way to make a fabricated claim resolve,
-  not a way to make it true.
-- **No grounding, entailment or NLI.** Whether the document supports the claim is never
-  assessed. Only existence.
-- **No quote-overlap or reuse detection.**
-- **No confidence scores.** Every verdict is one of three discrete states, arrived at
-  deterministically.
-- **No persistence and no cross-call cache.** Lookups are memoized within a single call and
-  discarded when it returns.
-- **No gateway or post-processing pass.** This server never rewrites, filters or intercepts
-  agent output; it reports and the host decides.
-- **No self-correction loop.** It does not call the agent back, retry, or repair citations
-  itself.
-
 ## Limitations
 
 Known and carried deliberately.
 
-- **Real agent output may contain nothing this tool can check.** See
-  [Does this work on real agent output?](#does-this-work-on-real-agent-output) - the single
-  most important caveat here.
+### Does this work on real agent output?
+
+**Read this before adopting.** It is the single biggest risk to this tool being useful to
+you, and it is not hypothetical.
+
+One real multi-agent application using PageIndex was investigated (read-only, ~25 agent
+roles). Its corpus-citing roles were uniformly instructed to use a single citation format,
+and one further role carried a bracket-tag convention of its own - so a single application
+can hold more than one citation convention at a time, invented independently by whoever wrote
+each agent's instructions. In the one real saved transcript available, **the instructed format
+appeared zero times.** What the agents actually wrote instead was free-text prose naming a
+source by its human-readable display title, with no file name, no id and no page - naming
+nothing any grammar could look up. The full write-up is in
+[`docs/spike-a-findings.md`](docs/spike-a-findings.md).
+
+Consequences you should plan for:
+
+- `total: 0` on a draft full of confident, unverifiable claims is a **routine** outcome, not
+  an anomaly. It means nothing checkable was found, not that the text is clean.
+- An instructed citation format is not a guaranteed one. Before relying on this tool,
+  check what your agents actually emit in real output, not what their prompts say they
+  will.
+- The mitigation is upstream instruction pressure (see
+  [Instructing your agent](#instructing-your-agent)), not more regex. No amount of pattern
+  matching fixes an agent that names no checkable source at all.
+
+That evidence is one application and one transcript. It is not a general law about all
+agents - but it is concrete counter-evidence against assuming yours follow their
+instructions.
+
+### Where the grammar misses
+
+Both directions are enumerated case by case, with worked examples, in
+[`docs/citation-grammar.md`](docs/citation-grammar.md#where-the-grammar-over-reaches-and-under-reaches).
+
 - **Over-reach:** a citation-shaped string that is not a citation can be flagged, and can come
   back `unresolved` rather than merely `unchecked` - a bracket tag whose value names a real
   document, or a quoted span ending in `.pdf` inside a code example, are both read as
@@ -496,17 +465,15 @@ Known and carried deliberately.
 - **Under-reach:** a real citation can be missed with no trace at all. A citation glued to a
   preceding URL by `,`, `;`, `(` or `)` is read as part of that URL and is **dropped in every
   status** - it appears in no array and is not counted in `total`, which is indistinguishable
-  from there being nothing to check. The same silence covers any name that does not stand as
-  its own token: one touching `/`, `:`, `%`, `+`, `@`, `#`, `=`, `&`, `\` or a format control
-  character (`sub/chapter.pdf`, `ns:chapter.pdf`, `report+final.pdf`), and one written
-  directly against text in a script that uses no word spaces. That silence is deliberate: the
-  alternative is to cut the name at the glue character and check the surviving fragment, which
-  reports a document the author never wrote and turns a silence into a false `unresolved`. A
-  bare document name in a script that does not separate words with spaces is likewise not
-  extracted at all; quote it to have it checked. A space-bearing name that fails the quoted
+  from there being nothing to check. The same silence covers every name that does not stand as
+  its own token and every bare name in a script that separates no words, both listed above.
+  That silence is deliberate: the alternative is to cut the name at the glue character and
+  check the surviving fragment, which reports a document the author never wrote and turns a
+  silence into a false `unresolved`. Quote such a name to have it checked.
+- **A space-bearing name can be checked as a different document.** One that fails the quoted
   shape check on a character or on the word limit is dropped entirely or read as a shorter
-  fragment and checked as a different document; failing on the 80-character limit alone drops
-  it, never leaving a fragment.
+  fragment, and the fragment is then checked for real; failing on the 80-character limit alone
+  drops it, never leaving a fragment.
 - **A page claim can go unverified while its document is still checked.** A page phrase that
   names its own document (`page 12 of results.pdf`) is dropped rather than bound, because the
   document to its left is not its owner and binding it there would report a real document as
@@ -537,12 +504,14 @@ Known and carried deliberately.
 - **`unchecked` where a check was possible:** `[node:report.pdf]` and `node_id:report.pdf`
   written with no space after the colon report an `unchecked` node id instead of checking the
   document. Safe (an `unchecked` citation is never deleted) but not what the author meant.
-- Both directions are enumerated case by case, with worked examples, in
-  [`docs/citation-grammar.md`](docs/citation-grammar.md#where-the-grammar-over-reaches-and-under-reaches).
+- A citation combining a page and a node produces a single verdict, so an `unresolved` there
+  may mean either half failed. `suggestion` says which.
 - The connector-word list (`on`, `at`, `see`), the quoted-name shape limits and the bracket-tag
   keyword acceptance are fixed choices made without corpus evidence of what real agents write.
   They may need revisiting.
-- Only `.pdf` documents are recognized; there is no support for any other extension.
+
+### Operational limits
+
 - **There is no timeout budget for a whole call.** Each backend request is bounded only by the
   MCP SDK's 60-second per-request default, and citations resolve **sequentially**, each
   distinct document costing one existence lookup plus (if a node is cited) one or more
@@ -583,12 +552,32 @@ Known and carried deliberately.
   lookup resolves against the account's whole corpus. If two documents in the same account
   share a file name, existence still answers correctly but identity does not: the lookup
   resolves one of them without saying which.
-- A citation combining a page and a node produces a single verdict, so an `unresolved` there
-  may mean either half failed. `suggestion` says which.
 - The API key's capability exceeds what this server uses: the PageIndex tool surface it
   authenticates includes a document-deletion tool, which this server never calls, but a leaked
   or over-scoped key still carries that capability. Scope the key as narrowly as PageIndex
   allows.
+
+### Non-goals
+
+These are considered decisions, not gaps. Each was scoped out deliberately.
+
+- **No corpus discovery.** This server will not list, browse or search the corpus to help an
+  agent find out what document names exist. Its job is to answer "does this citation
+  resolve", not to help an agent write a citation. An agent that needs a real file name
+  should get it from whatever retrieval step produced the claim in the first place; handing
+  an agent a list of real names to choose from is a way to make a fabricated claim resolve,
+  not a way to make it true.
+- **No grounding, entailment or NLI.** Whether the document supports the claim is never
+  assessed. Only existence.
+- **No quote-overlap or reuse detection.**
+- **No confidence scores.** Every verdict is one of three discrete states, arrived at
+  deterministically.
+- **No persistence and no cross-call cache.** Lookups are memoized within a single call and
+  discarded when it returns.
+- **No gateway or post-processing pass.** This server never rewrites, filters or intercepts
+  agent output; it reports and the host decides.
+- **No self-correction loop.** It does not call the agent back, retry, or repair citations
+  itself.
 
 ## Development
 
@@ -599,26 +588,24 @@ npx vitest run test/<file>.test.ts   # a single test file
 npm run build                        # tsc -> dist/
 ```
 
-`prepare` is what builds `dist/` on `npm install`, on `npm pack`/`npm publish` and on a
-git-URL install of this repository. It stands aside when the toolchain that would do the
-building is not installed, so a production install (`npm ci --omit=dev`,
-`npm install --omit=dev`) succeeds and simply installs no `dist/` of its own - run
-`npm run build` yourself if you need one there. A build that runs and *fails* still fails
-the install; only the absence of `typescript` is treated as "nothing to do here".
-
 **Running the tests needs a newer Node than running the server does: development requires
 Node.js 20.19.0 or newer**, while the built server itself runs on any Node 20 (measured on
 20.0.0), which is what `engines` declares. The gap is a dev-toolchain limit, not a runtime
 one: vitest 4 bundles with rolldown, whose supported range is `^20.19.0 || >=22.12.0`.
 Below that, npm skips rolldown's native binding as engine-incompatible and the wasm
 fallback declares the same floor, so `npm test` fails with `Cannot find native binding`
-before any test runs. `npm install`, `npm run build` and `npm run typecheck` still succeed
-there, so only the test command breaks.
-
-Whether an older 20.x appears to work is platform-dependent - a clean install on macOS
-arm64 can produce a working binding on 20.13.0 while the same commit fails on Linux - so
-treat the declared range as the floor rather than whatever your own machine tolerates. CI
+before any test runs, while `npm install`, `npm run build` and `npm run typecheck` still
+succeed. Whether an older 20.x appears to work is platform-dependent - a clean install on
+macOS arm64 can produce a working binding on 20.13.0 while the same commit fails on Linux -
+so treat the declared range as the floor rather than whatever your own machine tolerates. CI
 runs the exact floor version rather than a moving major, so a break in it is visible.
+
+`prepare` is what builds `dist/` on `npm install`, on `npm pack`/`npm publish` and on a
+git-URL install of this repository. It stands aside when the toolchain that would do the
+building is not installed, so a production install (`npm ci --omit=dev`,
+`npm install --omit=dev`) succeeds and simply installs no `dist/` of its own - run
+`npm run build` yourself if you need one there. A build that runs and *fails* still fails
+the install; only the absence of `typescript` is treated as "nothing to do here".
 
 The unit suite builds against fake lookup implementations, so it needs no API key and no
 network. The integration test (`test/integration.test.ts`) is the only suite that touches the
