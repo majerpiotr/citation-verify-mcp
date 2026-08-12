@@ -6,6 +6,10 @@ key.txt
 *.key
 .env
 .env.*
+# A project-local .npmrc is where a registry token ends up if you set one from inside
+# the repo. It is never needed here - publishing reads ~/.npmrc - so ignoring it costs
+# nothing and closes the path.
+.npmrc
 *.env
 
 # internal review workspace - never publish
