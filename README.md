@@ -46,10 +46,9 @@ kept between calls.
 The three forms below differ only in how the host obtains the server. Pick the first one that
 applies to you; everything else about the integration is identical.
 
-### 1. From npm
+### 1. From npm (recommended)
 
-**Not available yet - this package is not published to npm.** When it is, this becomes the
-recommended form, and nothing but the `args` line differs from form 2:
+Nothing to install ahead of time - `npx` fetches the published package on first launch:
 
 ```json
 {
@@ -63,11 +62,18 @@ recommended form, and nothing but the `args` line differs from form 2:
 }
 ```
 
-### 2. From GitHub (works today)
+Claude Code users can skip the config file and run:
 
-npm installs straight from the repository, builds the server as part of that install, and
-exposes it under its own command name. No clone, no build step of your own, and no path on
-your disk baked into the configuration:
+```bash
+claude mcp add citation-verify \
+  -e PAGEINDEX_API_KEY=<your-pageindex-api-key> \
+  -- npx -y citation-verify-mcp
+```
+
+### 2. From GitHub
+
+Installs straight from the repository instead of the registry. Use it to run code that is
+ahead of the latest release, or if you would rather not depend on npm at all:
 
 ```json
 {
@@ -81,16 +87,11 @@ your disk baked into the configuration:
 }
 ```
 
-Claude Code users can skip the file and run:
-
-```bash
-claude mcp add citation-verify \
-  -e PAGEINDEX_API_KEY=<your-pageindex-api-key> \
-  -- npx -y github:majerpiotr/citation-verify-mcp
-```
-
-This form needs a Node toolchain on the machine, because the install compiles the server
-rather than downloading a prebuilt one. That is the only practical difference from form 1.
+Two differences from form 1 are worth knowing. It compiles the server on your machine
+instead of downloading a prebuilt one, so it needs a working Node toolchain. And a bare
+`github:` reference tracks the default branch, which is whatever has landed since the last
+release rather than a fixed version; pin it if that matters to you:
+`github:majerpiotr/citation-verify-mcp#v0.1.0`.
 
 ### 3. From a local clone
 

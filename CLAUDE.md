@@ -176,9 +176,12 @@ Keep commits scoped to one defect or one feature, with an explicit path list.
   because its explanation is shorter. An end-to-end run against the real server is what caught
   this file quoting the smaller number.
   `PAGEINDEX_FOLDER_ID` is not implemented.
-- The package is NOT published to npm. The README's quick start therefore leads with a
-  clone-and-build path and marks the `npx` form as post-publication. Do not present the
-  `npx` form as working today.
+- The package IS published to npm as `citation-verify-mcp`, first at 0.1.0. The README's
+  quick start therefore leads with `npx -y citation-verify-mcp`, then a `github:` install,
+  then a local clone. A published version is immutable: its README is the one baked into
+  that tarball, so anything the quick start claims must be true at `npm publish` time, not
+  merely true later. Bump the version for a correction; never assume a fix to `main`
+  reaches an already-published release.
 - A failed lookup writes one redacted, control-character-free, 400-char-capped line to
   stderr (`logLookupFailure` in `src/resolver.ts`). stdout is the MCP protocol stream and
   must never be written to (`test/stdout-safety.test.ts`).

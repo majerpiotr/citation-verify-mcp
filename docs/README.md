@@ -6,7 +6,10 @@ Two audiences read this folder, and most of it is not written for the first one.
 Everything else is the project's working record: why the code is the way it is, kept because the
 code comments cite it, not because it is worth your time.
 
-**Note:** none of this ships. The npm package contains `dist/`, `README.md` and `LICENSE` only.
+**Note:** the npm package ships `dist/`, `README.md`, `LICENSE`, and exactly the two files in
+the first table below - the ones the README sends you to read. Nothing else here is in the
+tarball, which is why a link to any of it from the README must be an absolute URL rather than
+a relative path (`test/toolchain.test.ts` enforces that).
 
 ---
 
