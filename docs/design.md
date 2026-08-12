@@ -105,7 +105,7 @@ right document, and seeds a future relevance layer.
 > citations wholesale - the exact failure CLAUDE.md hard rule 4 forbids. See
 > `docs/spike-b-findings.md` section 6.
 
-The corrected citation model (approved in `docs/rework-plan.md`): **a citation names a
+The corrected citation model: **a citation names a
 DOCUMENT, optionally narrowed by a page or a node.** A document reference is verifiable on
 its own; a page or node is verifiable only relative to its document; a bare node id with
 no document in the same sentence is unverifiable by construction and must be reported
@@ -234,7 +234,7 @@ real citation. Leave `unchecked` citations in place with a note; do not delete t
 
   Full findings in `docs/spike-b-findings.md`. They superseded the transport, the lookup
   argument, and the found/not-found discriminator this document assumed - see sections 3,
-  5, and 6 above - and drove `docs/rework-plan.md`.
+  5, and 6 above - and drove the rework that produced the current code.
 
 ## 10. Testing
 

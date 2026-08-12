@@ -1,12 +1,12 @@
 // test/server.test.ts
 //
 // Drives the real MCP server over InMemoryTransport with a real MCP Client and a fake
-// DocLookup (docs/rework-plan.md "Target interfaces") - offline, no key, no network.
+// DocLookup - offline, no key, no network.
 // Covers: tool registration and input schema, an end-to-end resolved+unresolved call, the
 // unresolved-vs-unchecked invariant at THIS layer (CLAUDE.md hard rule 4 - a throw from the
 // client must surface as `unchecked`, never `unresolved`), the `suggestion` field
-// round-tripping, and the tool description's load-bearing clauses (docs/rework-plan.md Task
-// R4) pinned by meaning-carrying regexes rather than a verbatim string pin.
+// round-tripping, and the tool description's load-bearing clauses, pinned by
+// meaning-carrying regexes rather than a verbatim string pin.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

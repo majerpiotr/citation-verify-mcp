@@ -1,12 +1,13 @@
 // src/resolver.ts
 //
-// Classifies each citation extracted from a draft against the real corpus, per
-// docs/rework-plan.md Task R3. The load-bearing invariant (CLAUDE.md hard rule 4):
+// Classifies each citation extracted from a draft against the real corpus.
+// The load-bearing invariant (CLAUDE.md hard rule 4):
 // `unresolved` requires a POSITIVE miss - a document confirmed absent, a page confirmed
 // outside the real page count, or a node confirmed absent from the real tree.
 // `unchecked` is everything the check could not run to completion: a bare node id with no
 // document, or any throw from the client. A throw is NEVER caught and turned into anything
-// but `unchecked` - that is the client's contract (docs/rework-plan.md "Target interfaces").
+// but `unchecked` - that is the client's contract, declared on `DocLookup` in
+// src/pageindex-client.ts.
 import { extractCitations, type Citation } from "./grammar.js";
 import type { DocLookup, DocumentInfo } from "./pageindex-client.js";
 

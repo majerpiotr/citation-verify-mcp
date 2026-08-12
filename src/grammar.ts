@@ -1,8 +1,8 @@
 // src/grammar.ts
 //
 // A citation names a DOCUMENT, optionally narrowed by a page or a node - the citation
-// model approved in docs/rework-plan.md ("Target citation model"), which supersedes the
-// earlier assumption that a bare node_id identifies a document. It does not: per
+// model that supersedes this project's earlier assumption that a bare node_id identifies a
+// document. It does not: per
 // docs/spike-b-findings.md section 6, node_id values are small ordinals scoped inside one
 // document's tree, and every document has a node "0000". A bare node_id with no document
 // in the same sentence is therefore unverifiable by construction and is emitted with
@@ -618,7 +618,7 @@ function pageOwnerFollows(
 
 // A document followed by a page marker on the SAME LINE, separated by DOC_PAGE_SEP above -
 // no other words beyond the closed connector list, and never a newline. Judgment call
-// (docs/rework-plan.md Task R2 leaves the exact proximity open): a page reference in a
+// (no rule fixes the exact proximity, so this is chosen here): a page reference in a
 // real draft is almost always glued to the name it narrows ("report.pdf p.5") or joined by
 // one of the forms above, so this stops short of arbitrary same-sentence distance, which
 // would risk pairing a page number with the wrong document when a sentence mentions more
@@ -872,7 +872,7 @@ function pageRangeToken(page: { from: number; to: number }): string {
 // always introduces the node, and the ordering of the two markers in the token is fixed
 // regardless of which order they appeared in the source text. NOTE for downstream (tool
 // description, README): "#p<N>&n<id>" is a new canonical shape beyond the plain "#p<N>"
-// and "#n<id>" forms enumerated in docs/rework-plan.md and must be documented there too.
+// and "#n<id>" forms, and must be documented in all three user-facing surfaces.
 //
 // Trade-off worth carrying forward: if this merged citation resolves the document and the
 // page but the node is absent, the whole citation reports one `unresolved` - the valid

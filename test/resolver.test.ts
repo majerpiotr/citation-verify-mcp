@@ -1,7 +1,7 @@
 // test/resolver.test.ts
 //
 // Exercises verifyCitations against a FAKE DocLookup - no network, no key. Every case
-// below traces back to a rule in docs/rework-plan.md's Task R3 or to CLAUDE.md hard rule
+// below traces back to CLAUDE.md hard rule
 // 4 (unresolved requires a positive miss; anything ambiguous is unchecked). Call counts on
 // the fake are asserted explicitly wherever the per-call dedup rule applies - the dedup is
 // otherwise invisible from outcomes alone.

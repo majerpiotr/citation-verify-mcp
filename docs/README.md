@@ -30,7 +30,6 @@ the hard rules; these are its evidence.
 | [`spike-b-findings.md`](spike-b-findings.md) | **Ground truth.** The observed behaviour of the PageIndex backend, probed live with a real key. It supersedes any document that disagrees with it, including this one. Cited from seven files. |
 | [`spike-a-findings.md`](spike-a-findings.md) | What a real consuming application actually emitted. The source of the README's headline caveat: a transcript full of confident argument can contain nothing checkable. Its measurements stand; its present-tense claims about the grammar are historical. |
 | [`design.md`](design.md) | The approved design, since revised against both spikes. |
-| [`rework-plan.md`](rework-plan.md) | Superseded as a plan, but still cited by name from the code and tests as the source of specific rules. Carries a status banner. |
 
 ## What used to be here
 

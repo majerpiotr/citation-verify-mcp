@@ -21,9 +21,6 @@ Authoritative documents, read before starting work, in this order:
 - `docs/citation-grammar.md` - the published, exhaustive grammar reference. It is a
   USER-FACING surface, not background: several disclosed limits live only there, and
   `test/server.test.ts` pins them against it. Read it before changing `src/grammar.ts`.
-- `docs/rework-plan.md` - a historical build record that carries a SUPERSEDED banner, kept
-  because the code and tests cite its task numbers and section names by path as the source of
-  specific rules. Do not implement from it or cite it as current behaviour.
 
 ## Hard rules
 

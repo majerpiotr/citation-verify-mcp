@@ -3,7 +3,7 @@
 // Exercises verifyCitations against the REAL backend, via a real PageindexHttpClient -
 // the only place in the suite that touches the network. Credential-gated: skipped
 // entirely unless BOTH PAGEINDEX_API_KEY and CITATION_VERIFY_TEST_DOC_NAME are set, so an
-// absent credential is a clean skip, never a failure (docs/rework-plan.md Task R6).
+// absent credential is a clean skip, never a failure.
 //
 // Environment contract:
 //   PAGEINDEX_API_KEY             - a live key.
