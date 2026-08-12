@@ -200,18 +200,21 @@ already in scope.
 
 ## Release readiness for GitHub (separate from code findings)
 
-- [ ] `package.json` says `version: 0.0.1`; decide the published version (1.0.0 if the
-      concept-validation bar is met, or 0.1.0 to signal pre-stability).
-- [ ] Untracked `probe-p5.mjs`: a measurement script; move to `scripts/` with a
-      comment, or delete.
-- [ ] Untracked `docs/history/code-review-round-2.md`: historical record of round 2 (its P1/P2
-      findings are fixed on this branch); commit it as history or delete it.
-- [ ] `feature/citation-verify-core` is 82 commits ahead of `main`; merge before
-      publishing.
-- [ ] Repository URL in `package.json` points to `github.com/majerpiotr/...`; confirm
-      the account/repo name before pushing.
-- [ ] Package is intentionally NOT published to npm; README already leads with
-      clone-and-build. Keep it that way until publication.
+- [x] `package.json` says `version: 0.0.1`; decide the published version (1.0.0 if the
+      concept-validation bar is met, or 0.1.0 to signal pre-stability). **Resolved: 0.1.0.**
+- [x] Untracked `probe-p5.mjs`: a measurement script; move to `scripts/` with a
+      comment, or delete. **Resolved: kept as `scripts/measure-response-size.mjs`.**
+- [x] Untracked `docs/history/code-review-round-2.md`: historical record of round 2 (its P1/P2
+      findings are fixed on this branch); commit it as history or delete it. **Resolved: kept
+      as history.**
+- [ ] `feature/citation-verify-core` is 82 commits ahead of `main` (105 as of this edit);
+      merge before publishing. **Decided: fast-forward, so the branch's commits become
+      `main`'s history unchanged and no merge commit is created.**
+- [x] Repository URL in `package.json` points to `github.com/majerpiotr/...`; confirm
+      the account/repo name before pushing. **Resolved: confirmed correct.**
+- [ ] Package is intentionally NOT published to npm. The README's quick start now leads with
+      the npm form marked unavailable, then a GitHub install that works today. Publishing
+      means flipping that marker and the settled fact in `CLAUDE.md` in one commit.
 
 ## Suggested order of work
 

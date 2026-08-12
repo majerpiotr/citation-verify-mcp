@@ -39,14 +39,69 @@ Three things decide whether this tool is useful to you. None of them is a detail
 
 ## Quick start
 
-**This package is not published to npm yet**, so today the only installation path that works
-is from source. Clone it, build it, and point your MCP host at the built entry point:
+Add one block to your MCP host's configuration. That block is the entire integration:
+**unplugging is removing it.** There is no other integration point, no database, and no state
+kept between calls.
+
+The three forms below differ only in how the host obtains the server. Pick the first one that
+applies to you; everything else about the integration is identical.
+
+### 1. From npm
+
+**Not available yet - this package is not published to npm.** When it is, this becomes the
+recommended form, and nothing but the `args` line differs from form 2:
+
+```json
+{
+  "mcpServers": {
+    "citation-verify": {
+      "command": "npx",
+      "args": ["-y", "citation-verify-mcp"],
+      "env": { "PAGEINDEX_API_KEY": "<your-pageindex-api-key>" }
+    }
+  }
+}
+```
+
+### 2. From GitHub (works today)
+
+npm installs straight from the repository, builds the server as part of that install, and
+exposes it under its own command name. No clone, no build step of your own, and no path on
+your disk baked into the configuration:
+
+```json
+{
+  "mcpServers": {
+    "citation-verify": {
+      "command": "npx",
+      "args": ["-y", "github:majerpiotr/citation-verify-mcp"],
+      "env": { "PAGEINDEX_API_KEY": "<your-pageindex-api-key>" }
+    }
+  }
+}
+```
+
+Claude Code users can skip the file and run:
 
 ```bash
-git clone <this repository> citation-verify-mcp
+claude mcp add citation-verify \
+  -e PAGEINDEX_API_KEY=<your-pageindex-api-key> \
+  -- npx -y github:majerpiotr/citation-verify-mcp
+```
+
+This form needs a Node toolchain on the machine, because the install compiles the server
+rather than downloading a prebuilt one. That is the only practical difference from form 1.
+
+### 3. From a local clone
+
+Use this when you intend to modify the server, or when your host must launch a build you
+control. It is the only form that hard-codes a path, so prefer either of the above if you are
+merely consuming the tool:
+
+```bash
+git clone https://github.com/majerpiotr/citation-verify-mcp.git
 cd citation-verify-mcp
-npm install
-npm run build
+npm install          # `prepare` builds dist/ for you
 ```
 
 ```json
@@ -55,20 +110,18 @@ npm run build
     "citation-verify": {
       "command": "node",
       "args": ["/absolute/path/to/citation-verify-mcp/dist/index.js"],
-      "env": {
-        "PAGEINDEX_API_KEY": "<your-pageindex-api-key>"
-      }
+      "env": { "PAGEINDEX_API_KEY": "<your-pageindex-api-key>" }
     }
   }
 }
 ```
 
-Once the package **is** published, the same integration will need no clone and no build step:
-`"command": "npx"` with `"args": ["-y", "citation-verify-mcp"]`, everything else unchanged.
-That form does not work today.
+### Checking that it worked
 
-Either way, that is the whole integration. **Unplugging is removing the block.** There is no
-other integration point, no database, and no state kept between calls.
+Your host should list one tool, `verify_citations`. If the server is misconfigured it does not
+start at all - it writes a diagnostic to stderr and exits non-zero, rather than starting and
+reporting every citation as unverifiable. See [Startup validation](#startup-validation) for
+what it refuses to start on.
 
 ## Example
 
