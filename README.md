@@ -443,7 +443,9 @@ each agent's instructions. In the one real saved transcript available, **the ins
 appeared zero times.** What the agents actually wrote instead was free-text prose naming a
 source by its human-readable display title, with no file name, no id and no page - naming
 nothing any grammar could look up. The full write-up is in
-[`docs/spike-a-findings.md`](docs/spike-a-findings.md).
+[`docs/spike-a-findings.md`](https://github.com/majerpiotr/citation-verify-mcp/blob/main/docs/spike-a-findings.md),
+in the repository - it is investigation evidence rather than documentation, so it is not
+shipped inside the package.
 
 Consequences you should plan for:
 
@@ -634,9 +636,12 @@ npx vitest run test/integration.test.ts
 - `CITATION_VERIFY_TEST_NODE_ID` (optional): a node id that really exists in that document's
   outline. When absent, the one test that needs it is skipped rather than guessed at.
 
-Design background lives in [`docs/`](docs): `citation-grammar.md` for the full grammar
-reference, `design.md` for the approved design, `spike-a-findings.md` for what a real
-consuming application emits, `spike-b-findings.md` for the observed backend behaviour.
+Design background lives in the repository's
+[`docs/`](https://github.com/majerpiotr/citation-verify-mcp/blob/main/docs/README.md), which
+indexes it by audience: `citation-grammar.md` for the full grammar reference, `design.md` for
+the approved design, `spike-a-findings.md` for what a real consuming application emits,
+`spike-b-findings.md` for the observed backend behaviour, and `history/` for finished records
+that are kept only because the code cites them.
 
 ## Contributing
 

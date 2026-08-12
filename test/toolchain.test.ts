@@ -37,6 +37,7 @@ const readme = read("../README.md");
 const manifest = JSON.parse(read("../package.json")) as {
   engines: { node: string };
   scripts: Record<string, string>;
+  files: string[];
 };
 const prepareScript = fileURLToPath(new URL("../scripts/prepare.mjs", import.meta.url));
 
@@ -188,5 +189,49 @@ describe("the prepare hook builds when it can and stands aside when it cannot", 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// The README is the ONE document an npm consumer always receives, and it defers real content
+// to other files: the exhaustive grammar reference, and the guide on wiring the tool into an
+// agent system. `files: ["dist"]` shipped neither, so every one of those links pointed at a
+// path that does not exist inside the installed package - the reader is told to go and read
+// something they were not given. It renders on npmjs.com only because npm rewrites relative
+// links against the `repository` field; from `node_modules/citation-verify-mcp/README.md`
+// there is nothing to open.
+//
+// The rule this pins: a RELATIVE link in the README must point at a file the package actually
+// ships. Anything not shipped must be linked absolutely, so it resolves from anywhere.
+describe("the README's own links survive an npm install", () => {
+  // Files npm always includes regardless of `files` (package.json, README, LICENSE), plus
+  // whatever `files` lists. A link is shipped if it sits under one of those entries.
+  const alwaysIncluded = ["package.json", "README.md", "LICENSE"];
+
+  function isShipped(target: string): boolean {
+    if (alwaysIncluded.includes(target)) return true;
+    return manifest.files.some((entry) => target === entry || target.startsWith(`${entry}/`));
+  }
+
+  // Markdown links, minus any anchor, keeping only relative ones - an absolute URL always
+  // resolves and is the correct way to point at something deliberately not shipped.
+  function relativeLinks(markdown: string): string[] {
+    const found = new Set<string>();
+    for (const m of markdown.matchAll(/\]\(([^)\s]+?)(?:#[^)]*)?\)/g)) {
+      const target = m[1];
+      if (/^[a-z]+:/i.test(target) || target.startsWith("#")) continue;
+      found.add(target);
+    }
+    return [...found];
+  }
+
+  it("links relatively only to files the package ships", () => {
+    const unshipped = relativeLinks(readme).filter((t) => !isShipped(t));
+    expect(unshipped).toEqual([]);
+  });
+
+  // Guards the guard: if the extraction silently stopped finding links, the assertion above
+  // would pass on an empty list forever.
+  it("actually finds the README's relative links", () => {
+    expect(relativeLinks(readme).length).toBeGreaterThan(2);
   });
 });

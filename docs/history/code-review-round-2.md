@@ -20,7 +20,7 @@
 ### P1 — cancellation can still return a successful result
 
 `verifyCitations` checks `signal.throwIfAborted()` only before each citation
-([`src/resolver.ts`](../src/resolver.ts#L236-L245)). If cancellation happens while
+([`src/resolver.ts`](../../src/resolver.ts#L236-L245)). If cancellation happens while
 the final (or only) citation is being classified, there is no subsequent loop boundary.
 The function completes and returns a normal result despite the request having been
 cancelled.
@@ -40,9 +40,9 @@ the request was cancelled.
 ### P1 — cancellation does not reach a paginated node-structure lookup
 
 The signal is forwarded only as far as `verifyCitations`
-([`src/server.ts`](../src/server.ts#L161-L163)), but it is not passed to `DocLookup`,
+([`src/server.ts`](../../src/server.ts#L161-L163)), but it is not passed to `DocLookup`,
 `PageindexHttpClient`, or `accumulateNodeIds`
-([`src/pageindex-client.ts`](../src/pageindex-client.ts#L460-L469)). A cited node can
+([`src/pageindex-client.ts`](../../src/pageindex-client.ts#L460-L469)). A cited node can
 make `accumulateNodeIds` issue up to 50 sequential `get_document_structure` calls. If
 the request is cancelled after part 1 reports `has_more: true`, the current code has no
 check before part 2 and continues through all later parts.
@@ -61,7 +61,7 @@ to `unchecked` by a lookup catch block.
 ### P2 — the name-echo fix weakens the documented exact-name contract for Unicode
 
 `assertNameEcho` accepts two different strings whenever their NFC-normalized forms match
-([`src/pageindex-client.ts`](../src/pageindex-client.ts#L177-L190)). Therefore a request
+([`src/pageindex-client.ts`](../../src/pageindex-client.ts#L177-L190)). Therefore a request
 for `café.pdf` and a response naming `café.pdf` are treated as the same document. This
 is not a case-only serialization detail: the two raw filenames are distinct on filesystems
 and storage systems that preserve Unicode normalization, and the public documentation
@@ -82,7 +82,7 @@ different identity rule implicit in a defense-in-depth check.
 | Previous finding | Status | Assessment |
 | --- | --- | --- |
 | Response name was not tied to requested name | Fixed | A differing echo now becomes `unchecked`; see the Unicode policy issue above. |
-| Non-boolean `isError` was treated as false | Fixed | [`getResultEnvelope`](../src/pageindex-client.ts#L86-L92) rejects every non-boolean value, and tests cover the unsafe success shape. |
+| Non-boolean `isError` was treated as false | Fixed | [`getResultEnvelope`](../../src/pageindex-client.ts#L86-L92) rejects every non-boolean value, and tests cover the unsafe success shape. |
 | `_internal draft.pdf` and over-80-character quoted names leaked a tail fragment | Partly fixed | Leading `_`, `-`, and `.` names are accepted; name-shaped quoted spans over 80 characters and within four words are reserved. |
 | Quoted names over four words leak a tail fragment | Deliberately accepted | The project documents this as indistinguishable from prose. It remains a real false-target risk: `"Q3 Financial Results Final Draft.pdf"` is checked as `Draft.pdf`. |
 | Unbounded number of distinct lookups | Partly fixed | The 50-document cap prevents the original days-long document sweep, but it does not cap structure-page requests; see P1 above. |
