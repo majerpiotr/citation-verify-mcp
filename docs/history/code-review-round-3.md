@@ -204,7 +204,7 @@ already in scope.
       concept-validation bar is met, or 0.1.0 to signal pre-stability).
 - [ ] Untracked `probe-p5.mjs`: a measurement script; move to `scripts/` with a
       comment, or delete.
-- [ ] Untracked `docs/code-review-round-2.md`: historical record of round 2 (its P1/P2
+- [ ] Untracked `docs/history/code-review-round-2.md`: historical record of round 2 (its P1/P2
       findings are fixed on this branch); commit it as history or delete it.
 - [ ] `feature/citation-verify-core` is 82 commits ahead of `main`; merge before
       publishing.

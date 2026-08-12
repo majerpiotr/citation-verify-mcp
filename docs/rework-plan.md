@@ -10,7 +10,7 @@
 > Read instead: `spike-b-findings.md` (observed backend behaviour), `design.md` (the
 > approved design), and `../README.md` (how the shipped server actually behaves).
 
-> Supersedes `implementation-plan.md` Tasks 2-8 where they conflict. Driven by
+> Supersedes `history/implementation-plan.md` Tasks 2-8 where they conflict. Driven by
 > `spike-b-findings.md`, which replaced this project's three load-bearing assumptions:
 > the transport, the lookup argument, and the found/not-found discriminator.
 

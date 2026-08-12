@@ -23,7 +23,7 @@
 
 **Architecture:** A Node/TypeScript MCP server on `@modelcontextprotocol/sdk`, distributed via `npx`. It extracts citation tokens from a draft text, resolves each against PageIndex by wrapping `pageindex-mcp` (spawned as a child MCP server), and returns a structured verdict (`resolved` / `unresolved` / `unchecked`). The core (grammar, resolver, server surface) depends on a `DocLookup` interface so it is unit-testable with a fake client; only the concrete PageIndex client touches the network.
 
-**Tech Stack:** Node 20+, TypeScript, `@modelcontextprotocol/sdk`, `vitest`, `tsx`. Wraps `pageindex-mcp` (npm). Design: [design.md](design.md).
+**Tech Stack:** Node 20+, TypeScript, `@modelcontextprotocol/sdk`, `vitest`, `tsx`. Wraps `pageindex-mcp` (npm). Design: [design.md](../design.md).
 
 ## Global Constraints
 
