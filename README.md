@@ -216,6 +216,13 @@ how it is formatted. **Making the agent write that is the host's job, not this s
 this tool answers whether a citation resolves; it does not help an agent discover what to
 cite (see [Non-goals](#non-goals)).
 
+> **Before you wire this into an agent system, read
+> [`docs/integration-guide.md`](docs/integration-guide.md).** Registering the server is the easy
+> part and is not what decides whether verification happens. That guide lists what does, measured
+> against a running multi-agent system - including the failure that produces evidence of
+> verification where none occurred: a weak model reporting "3 citations, 3 resolved" having
+> called the tool zero times.
+
 The block below is meant to be pasted directly into a citing agent's system prompt.
 
 ```text

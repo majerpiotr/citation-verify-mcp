@@ -11,5 +11,10 @@ key.txt
 # internal review workspace - never publish
 .superpowers/
 
+# per-machine tool settings. This was covered only by a personal global gitignore, which a
+# fresh clone on another machine (or a contributor's) does not have - so the file was one
+# `git add` away from being published with whatever local paths and permissions it holds.
+.claude/settings.local.json
+
 # macOS
 .DS_Store
